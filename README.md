@@ -6,12 +6,9 @@ An evidence pack is a ZIP of JSON files exported from a Mandate installation: an
 
 ## Run it
 
-Three ways, same file:
+Two ways, same file:
 
 ```
-# npm
-npx mandate-verify pack.zip
-
 # git
 git clone https://github.com/mandate-systems/mandate-verify
 node mandate-verify/mandate-verify.mjs pack.zip
