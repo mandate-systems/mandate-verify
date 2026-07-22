@@ -1,0 +1,39 @@
+{
+  "name": "mandate-verify",
+  "version": "1.0.0",
+  "description": "Offline verifier for Mandate evidence packs: per-file SHA-256 against a signed manifest, Ed25519 signatures over canonical payloads. One file, zero dependencies.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "mandate-verify": "./mandate-verify.mjs"
+  },
+  "files": [
+    "mandate-verify.mjs",
+    "README.md",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/check.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mandate-systems/mandate-verify.git"
+  },
+  "homepage": "https://mandateco.ca/verify.html",
+  "bugs": {
+    "url": "https://github.com/mandate-systems/mandate-verify/issues"
+  },
+  "keywords": [
+    "audit",
+    "verification",
+    "ed25519",
+    "sha-256",
+    "evidence",
+    "tamper-evident",
+    "ai-governance"
+  ],
+  "author": "Mandate Systems Inc. (https://mandateco.ca)"
+}

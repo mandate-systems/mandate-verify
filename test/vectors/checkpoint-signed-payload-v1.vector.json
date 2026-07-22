@@ -1,0 +1,14 @@
+{
+  "description": "Cross-language test vector for the ADR-0011 checkpoint signed-payload layout (CheckpointSignedPayload v1). Asserted by CheckpointSignedPayloadTests (C#) and verifyCheckpoint.test.ts (TS). Regenerate with MANDATE_UPDATE_CHECKPOINT_VECTOR=1.",
+  "domainTag": "mandate.audit.checkpoint-sig.v1",
+  "seedBase64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "tenantId": "00112233-4455-6677-8899-aabbccddeeff",
+  "windowStartEventId": "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
+  "windowEndEventId": "f0e1d2c3-b4a5-9687-7869-5a4b3c2d1e0f",
+  "eventCount": 7,
+  "merkleRootHex": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc",
+  "payloadHex": "6d616e646174652e61756469742e636865636b706f696e742d7369672e763100112233445566778899aabbccddeeff0a1b2c3d4e5f60718293a4b5c6d7e8f9f0e1d2c3b4a5968778695a4b3c2d1e0f0000000000000007030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc",
+  "publicKeyBase64": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik=",
+  "publicKeyFingerprint": "139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070",
+  "signatureHex": "b001bb2eca818ad76fe8da706e9a891f58299234a5d77249164855b8e54f406410e4aa5223ff96ef419df82b5f563d692d6a8d12cf45073fb86aa5ca6b615309"
+}

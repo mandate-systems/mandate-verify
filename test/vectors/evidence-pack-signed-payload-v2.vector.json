@@ -1,0 +1,33 @@
+{
+  "description": "Cross-language test vector for the ADR-0032 evidence-pack manifest signed-payload layout (EvidencePackSignedPayload v2). Asserted by EvidencePackSignedPayloadTests (C#) and verifyEvidencePack.test.ts (TS). Regenerate with MANDATE_UPDATE_EVIDENCE_PACK_VECTOR=1.",
+  "domainTag": "mandate.evidence-pack.manifest-sig.v2",
+  "seedBase64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  "tenantId": "00112233-4455-6677-8899-aabbccddeeff",
+  "manifestVersion": 1,
+  "generatedAt": "2025-05-01T09:00:00.0000000\u002B00:00",
+  "windowFrom": "2025-04-01T00:00:00.0000000\u002B00:00",
+  "windowTo": "2025-05-01T00:00:00.0000000\u002B00:00",
+  "truncated": false,
+  "checkpointsTruncated": false,
+  "contents": [
+    {
+      "filename": "policy/active.json",
+      "sha256Hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "byteLength": 11
+    },
+    {
+      "filename": "register/decisions.json",
+      "sha256Hex": "020406080a0c0e10121416181a1c1e20222426282a2c2e30323436383a3c3e40",
+      "byteLength": 222
+    },
+    {
+      "filename": "summary/decision-mix.json",
+      "sha256Hex": "0306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d60",
+      "byteLength": 3333
+    }
+  ],
+  "payloadHex": "6d616e646174652e65766964656e63652d7061636b2e6d616e69666573742d7369672e763200112233445566778899aabbccddeeff00000001000001968b12fe8000000195eea5d4000000019689249c0000000000000300000012706f6c6963792f6163746976652e6a736f6e0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20000000000000000b0000001772656769737465722f6465636973696f6e732e6a736f6e020406080a0c0e10121416181a1c1e20222426282a2c2e30323436383a3c3e4000000000000000de0000001973756d6d6172792f6465636973696f6e2d6d69782e6a736f6e0306090c0f1215181b1e2124272a2d303336393c3f4245484b4e5154575a5d600000000000000d05",
+  "publicKeyBase64": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik=",
+  "publicKeyFingerprint": "139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070",
+  "signatureHex": "869338b10134930df72208cca0c9daacb0c29824a50618fed12551f70d3a1470fca855f252c08852933d3af895dbb0b7cbacda0362e4a28c74cdc6e366776807"
+}

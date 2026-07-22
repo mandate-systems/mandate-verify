@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly mirror check: the repository must stay byte-identical to the copy
+    # served at mandateco.ca. A red run here means the site and this repository
+    # have diverged (see README, "Relationship to the product repository").
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: "Zero-dependency guard (only node: imports)"
+        run: |
+          if grep -E 'from "' mandate-verify.mjs | grep -v 'node:'; then
+            echo "mandate-verify.mjs imports something that is not a node: built-in"; exit 1
+          fi
+          echo "only node: built-ins imported"
+      - name: Test suite (offline)
+        run: node test/check.mjs
+
+  mirror:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+      - name: Test suite + live-site mirror comparison
+        env:
+          MIRROR: "1"
+        run: node test/check.mjs
