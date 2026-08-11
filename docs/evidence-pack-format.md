@@ -27,10 +27,12 @@ manifest.json                    the signed manifest (the only file not listed i
 policy/active.json               the policy in force at export time
 policy/versions.json             policy version history
 register/decisions.json          the decision register for the export window
+register/mandates.json           the authority-grant registry, revoked and expired rows included
 register/purposes.json           purpose tags referenced by the register
 scope/blind-spots.json           what the export window does not cover, stated explicitly
 summary/decision-mix.json        aggregate decision counts
 mutations/policy-trail.json      policy mutation history
+assurance/detector-catch-rate.json  measured catch rate of the shipped detector library, with its own scope statement
 checkpoints/<uuid>.json          one file per embedded audit checkpoint
 ```
 
