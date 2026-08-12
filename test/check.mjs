@@ -219,6 +219,7 @@ async function buildSyntheticPack() {
     ["register/decisions.json", enc.encode('[{"decision":"allow"},{"decision":"block"}]')],
     ["register/mandates.json", enc.encode('{"asOf":"generatedAt","mandates":[]}')],
     ["assurance/detector-catch-rate.json", enc.encode('{"schemaVersion":1,"scope":"synthetic"}')],
+    ["summary/framework-coverage.json", enc.encode('{"schemaVersion":1,"frameworkMix":[]}')],
     ["README.txt", enc.encode("Synthetic pack for the verifier test suite.\n")],
     ["checkpoints/11111111-2222-4333-8444-555555555555.json", enc.encode(JSON.stringify(cp))],
   ]);

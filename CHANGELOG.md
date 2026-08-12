@@ -7,6 +7,8 @@ Samples and documentation refresh; the verifier itself is byte-unchanged at 1.0.
 - The three sample packs regenerated from the current exporter. Each now carries `assurance/detector-catch-rate.json`, a control-effectiveness attestation of the shipped detector library (measured catch rate against the vendor's synthetic annotated corpus, with an in-file scope statement), plus `register/mandates.json` (the authority-grant registry, added to the exporter 2026-08-06). Same sample signing key; the published fingerprint is unchanged.
 - `docs/evidence-pack-format.md` inventory updated for both files. Verification never depended on the inventory: the signed manifest's content list remains authoritative in both directions.
 - Test-suite synthetic pack gains the two filenames, mirroring the private harness fixture.
+- The three sample packs regenerated again, adding `summary/framework-coverage.json`: the tenant's own rule-to-framework references (a closed six-id vocabulary on policy rules) and a per-framework decision rollup with an `unmapped` bucket. Its in-file scope statement carries the limit: a reference is the tenant's own annotation, recorded and not verified, and the file is not a compliance assessment. Same sample signing key; the published fingerprint is unchanged.
+- Inventory and test-suite synthetic pack updated for the new filename; the signed manifest's content list remains authoritative in both directions.
 
 ## 1.0.0 (2026-07-20)
 

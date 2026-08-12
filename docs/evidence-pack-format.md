@@ -31,6 +31,7 @@ register/mandates.json           the authority-grant registry, revoked and expir
 register/purposes.json           purpose tags referenced by the register
 scope/blind-spots.json           what the export window does not cover, stated explicitly
 summary/decision-mix.json        aggregate decision counts
+summary/framework-coverage.json  the tenant's own rule-to-framework references and a per-framework decision rollup, recorded not verified, with its own scope statement
 mutations/policy-trail.json      policy mutation history
 assurance/detector-catch-rate.json  measured catch rate of the shipped detector library, with its own scope statement
 checkpoints/<uuid>.json          one file per embedded audit checkpoint
