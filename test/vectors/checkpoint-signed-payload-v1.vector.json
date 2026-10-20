@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language test vector for the ADR-0011 checkpoint signed-payload layout (CheckpointSignedPayload v1). Asserted by CheckpointSignedPayloadTests (C#) and verifyCheckpoint.test.ts (TS). Regenerate with MANDATE_UPDATE_CHECKPOINT_VECTOR=1.",
+  "description": "Test vector for the checkpoint signed payload (domain tag mandate.audit.checkpoint-sig.v1). It holds the inputs, the exact payload bytes they build, and an Ed25519 signature over those bytes by a test-only key made from an all-zero seed. A verifier that rebuilds payloadHex from the inputs and verifies signatureHex with publicKeyBase64 reads the layout correctly.",
   "domainTag": "mandate.audit.checkpoint-sig.v1",
   "seedBase64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   "tenantId": "00112233-4455-6677-8899-aabbccddeeff",

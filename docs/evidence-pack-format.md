@@ -1,6 +1,6 @@
 # Mandate evidence pack: format specification
 
-This document specifies what is needed to check a Mandate evidence pack (the site and the CLI call it a signed record) independently: the container, the manifest, the three signed payloads, the records inside the pack, what ties the readable files to those records, the rules for comparing several packs, and the access record. It is the public companion to `mandate-verify.mjs` 2.5.0, which implements exactly what is written here.
+This document specifies what is needed to check a Mandate evidence pack (the site and the CLI call it a signed record) independently: the container, the manifest, the three signed payloads, the records inside the pack, what ties the readable files to those records, the rules for comparing several packs, and the access record. It is the public companion to `mandate-verify.mjs` 2.6.0, which implements exactly what is written here.
 
 Version note: the manifest signature format is `v3`, the checkpoint signature format is `v1`, the access-record signature format is `v4`, the manifest schema version is `3`, and records use layouts `1` to `9`. These numbers move independently. `node mandate-verify.mjs --version` prints the tool version and the three domain tags.
 
@@ -84,7 +84,8 @@ The manifest's content list is authoritative, and the set of files in the archiv
 - `tenantId` names the workspace the pack belongs to; the CLI prints it as `Workspace`.
 - The three timestamps are required and must match `YYYY-MM-DDTHH:MM:SS`, an optional fraction of 1 to 9 digits, then `Z` or `+HH:MM` / `-HH:MM`.
 - `truncated` is true when the register, or `chain/links.json`, holds only part of the window; `checkpointsTruncated` when the checkpoint files were capped; `mutationsTruncated` when the change trail was. All three flags are inside the signed payload, so a capped pack cannot be re-labelled complete or the reverse.
-- `contents` lists every file except `manifest.json`. Each `sha256Hex` is compared with the file. `byteLength` is bound by the signature but not compared with the file's length.
+- `contents` lists every file except `manifest.json`. Each `sha256Hex` is compared with the file, and since 2.5.1 each `byteLength`, which the signature binds, must equal the file's length.
+- `publicKeyBase64` must decode to 32 bytes. A key of any other length makes the manifest INVALID; it is not reported as a runtime without Ed25519.
 
 Rules on the manifest as a whole, applied once the signature verifies (the first that fails is reported):
 
@@ -92,7 +93,7 @@ Rules on the manifest as a whole, applied once the signature verifies (the first
 - **The declared fingerprint must match the key.** When `publicKeyFingerprint` is present it must equal the SHA-256 of the decoded `publicKeyBase64`. Since 2.4.0 a mismatch is refused, not ignored. The verifier reports the fingerprint it computed, never the declared one.
 - **Checkpoint ids.** When `checkpointIds` is an array, it must list exactly the ids of the `checkpoints/<uuid>.json` files in the archive, each once, in any order.
 
-**Other formats.** When `manifestVersion` is not 3, nothing further is checked and the verifier reports a different format, not INVALID: the CLI prints `RESULT: DIFFERENT FORMAT` naming the pack's format and the verifier to use, and exits 3; `--json` reports `"overall": "unsupported"` with `"format"`. This rule applies to the signed record only (the access record is section 8).
+**Other formats.** When `manifestVersion` is not 3, nothing further is checked and the verifier reports a different format, not INVALID: the CLI prints `RESULT: DIFFERENT FORMAT` naming the pack's format and the verifier to use, and exits 3; `--json` reports `"overall": "unsupported"` with `"format"`. The access record has its own format number (section 8).
 
 ## 3. Signed payload (`mandate.evidence-pack.manifest-sig.v3`)
 
@@ -117,7 +118,7 @@ for each content entry, in ascending filename order:
   byteLength           8      u64
 ```
 
-The timestamps are bound as integer Unix milliseconds, not as formatted strings: parse each and truncate to the millisecond (fraction digits past the third are dropped, not rounded). Offset form or `Z`, and any number of fraction digits, give the same bytes. An absent flag counts as false. The verifier sorts the entries itself before rebuilding, so their order in the JSON is not load-bearing; filenames are compared code unit by code unit (UTF-16), which for the ASCII names a pack uses is plain byte order. A u32 field that is not an integer from 0 to 4,294,967,295 makes the payload unbuildable and the manifest INVALID; it is never coerced. `byteLength` must be an integer.
+The timestamps are bound as integer Unix milliseconds, not as formatted strings: parse each and truncate to the millisecond (fraction digits past the third are dropped, not rounded). Offset form or `Z`, and any number of fraction digits, give the same bytes. An absent flag counts as false. The verifier sorts the entries itself before rebuilding, so their order in the JSON is not load-bearing; filenames are compared code unit by code unit (UTF-16), which for the ASCII names a pack uses is plain byte order. A u32 field that is not an integer from 0 to 4,294,967,295 makes the payload unbuildable and the manifest INVALID; it is never coerced. `byteLength` must be a non-negative integer no larger than 2^53 − 1; a negative one is never written as its two's complement.
 
 ## 4. Checkpoint payload (`mandate.audit.checkpoint-sig.v1`)
 
@@ -155,7 +156,7 @@ offset  length  field
 
 - **Workspace.** A checkpoint whose `tenantId` names another workspace than the manifest's fails, even though its own signature holds.
 - The signature attests the tuple, not the bare root, so a checkpoint's metadata cannot be swapped without invalidating it. `windowStartOccurredAt`, `windowEndOccurredAt`, `checkpointId`, `createdAt` and `schemaVersion` are not signed: the id bounds, the count and the root define the sealed window, and section 5.5 recomputes the root from the records.
-- The checkpoint's own `publicKeyFingerprint` must be present but is not compared with its key; the verifier reports the SHA-256 of `publicKeyBase64`.
+- **The declared fingerprint must match the key.** Since 2.6.0 the checkpoint's own `publicKeyFingerprint` must equal the SHA-256 of its decoded `publicKeyBase64` (in either case), as the manifest's must; once the signature verifies, a mismatch fails the checkpoint. The verifier reports the fingerprint it computed.
 
 ## 5. Records (`chain/links.json`)
 
@@ -381,7 +382,7 @@ The CLI takes several packs, or a folder, which stands for every `.zip` file in 
 
 Packs named one by one are put in order of `windowFrom` and each neighbouring pair is compared. When any input is a folder, the inputs are taken in the order given (a folder's files in name order) and compared one neighbour at a time, so a long export needs no more memory than two packs. For each pair, earlier window first:
 
-1. **One workspace.** The two `tenantId` values are the same string.
+1. **One workspace.** The two `tenantId` values are the same UUID, compared as the 16 bytes the signatures bind, so the case of their hex digits does not matter (since 2.6.0; before, they had to be the same string).
 2. **One key.** The two computed fingerprints are equal, unless both packs passed as VALID with fingerprints named by `--expect-fingerprint` (as after a key change).
 3. **No gap.** The later `windowFrom` is at most 1 millisecond after the earlier `windowTo`; overlap is allowed.
 4. **Both record walks passed** (sections 5 and 6).
@@ -396,7 +397,7 @@ The records agree when, in both directions:
 - **No erased record comes back.** A record live in one pack and removed in the other is named in a note (`N decisions erased between A and B: <id> (<outcome>, <time>), ...`). It fails instead when the pack in which it is removed says, by `generatedAt`, that it was made before the other.
 - **Register rows read the same.** A row (`source` `decision` or `imported`) in both packs must agree on `person`, `actorType`, `actorId`, `actorDisplay`, `action`, `occurredAt`, `provider`, `model`, `policyVersionId`, `correlationId`, and every other member that rows of both packs carry. Times compare as instants to 100 nanoseconds; other values as JSON with object keys sorted, an absent member as `null`. A different `actorDisplay` for the same agent (`actorType` `agent`, same `actorId`) is a note, not a failure.
 - **Sealed records match.** A link in both packs has the same hash in both.
-- **Change-trail entries read the same**, separately for `mutations/policy-trail.json` and for register rows with `"source": "mutation"`. An entry in both must agree on every member (times as instants). When only one copy no longer names who acted (`actorType` `mandate_support`, no `actorId`, no `actorDisplay`), those three members are skipped and a note says the account was removed between the exports. An entry one pack holds at a time the other is held to must be in the other.
+- **Change-trail entries read the same**, separately for `mutations/policy-trail.json` and for register rows with `"source": "mutation"`. An entry in both must agree on every member (times as instants). `actorSalt` is never compared: it is how the seal of who acted is checked, not part of what the entry says, and an entry exported before it was sealed carries none. When only one copy no longer names who acted (`actorType` `mandate_support`, no `actorId`, no `actorDisplay`), those three members are skipped and a note says the account was removed between the exports. An entry one pack holds at a time the other is held to must be in the other.
 
 The CLI prints `SEQUENCE: VALID`, `SEQUENCE: NOT VERIFIED` (no fingerprint named) or `SEQUENCE: INVALID` with the first failure, then the notes. A failed sequence exits 1. In `--json` a failed pair carries a `kind`: `workspace`, `key`, `gap`, `unreadable`, `missing`, `erased-first`, `changed` or `continuity`.
 
@@ -448,7 +449,7 @@ content count           4       u32
 for each content entry, in ascending filename order: as in section 3
 ```
 
-Timestamps, sorting and u32 ranges follow section 3; `opaqueBytes` must be a non-negative integer, and a window bound is absent when missing or `null`. The checks are the file checks of section 1 (both directions) and this signature. An access record has no checkpoints or records, and the section 2 rules (members, declared fingerprint, format) are not applied to it; its `manifestVersion` is signed but not checked against a value. `--expect-fingerprint` applies to its key as to a signed record.
+Timestamps, sorting and u32 ranges follow section 3; `opaqueBytes` must be a non-negative integer, and a window bound is absent when missing or `null`. The checks are the file checks of section 1 (both directions, hashes and lengths) and this signature. An access record has no checkpoints or records. Since 2.6.0 the section 2 rules apply to it as well: its `manifestVersion` must be 3 (any other value is reported as a different format and exits 3, as in section 2), it may carry only the 16 members shown above, and a declared `publicKeyFingerprint` must equal the SHA-256 of its key. `--expect-fingerprint` applies to its key as to a signed record.
 
 ## 9. Keys and fingerprints
 
@@ -473,10 +474,10 @@ Given several packs, the CLI exits with the worst code, ranked 0, 4, 1, 2, 3 fro
 1. Read the ZIP under the section 1 rules.
 2. Read the kind off `manifest.json` (section 8). The steps below are for a signed record.
 3. Parse `manifest.json`; `contents` must be an array. If `manifestVersion` is not 3, stop and report a different format.
-4. For every entry in `contents`, recompute the named file's SHA-256 and compare it with `sha256Hex`; a missing file is a failure.
+4. For every entry in `contents`, recompute the named file's SHA-256 and compare it with `sha256Hex`, and compare the file's length with `byteLength`; a missing file is a failure.
 5. Set equality, the other direction: every archive file except `manifest.json` must appear in `contents`.
 6. Rebuild the section 3 payload from the manifest and verify `signatureHex` with `publicKeyBase64`; then apply the section 2 rules.
-7. For each checkpoint file, check its members and its workspace, rebuild the section 4 payload and verify its signature with its own `publicKeyBase64`.
+7. For each checkpoint file, check its members and its workspace, rebuild the section 4 payload, verify its signature with its own `publicKeyBase64`, and check that its declared fingerprint names that key.
 8. Walk `chain/links.json`: decode each record, check its id, workspace and link to the one before (sections 5.1 to 5.4), and recompute every checkpoint's root (section 5.5).
 9. Check the ties of section 6: policy text and lists, register rows and persons, change-trail entries, erasures, the printed report, and the summary counts.
 10. Compute the fingerprint of the manifest key and of every checkpoint key, and compare each with the fingerprints you trust (section 9).

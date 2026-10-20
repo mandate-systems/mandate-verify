@@ -21,6 +21,11 @@
  *               person, change-trail entry, erasure, policy text, sealed list or printed report
  *               that no longer matches); two exports are compared both ways; the script itself is
  *               run the way an auditor runs it; the same file matrix runs over an access record.
+ *               Since 2.5.1 and 2.6.0 also: a key that is not 32 bytes, a signed length that is not
+ *               its file's, a checkpoint or access record that names another key's fingerprint, an
+ *               access record with a member its signature does not cover or of another format, two
+ *               exports that differ only in the salt that seals who acted or in how the workspace
+ *               id is written.
  *   4. PACKS  - the committed sample packs under samples/ verify end to end, and the fingerprint
  *               the README publishes for them is the key that actually signed them.
  *
@@ -109,6 +114,13 @@ if (process.env.MIRROR !== "1") {
   ok("verify.html publishes one sample fingerprint in both places",
     livePublishedFingerprint !== null && livePublishedFingerprint === liveSnippetFingerprint,
     `note=${livePublishedFingerprint} cli=${liveSnippetFingerprint}`);
+  // The page names the script's version and SHA-256 beside its download link.
+  const localSha = createHash("sha256").update(await readFile(join(repoRoot, "mandate-verify.mjs"))).digest("hex");
+  const liveSha = /SHA-256 of the file<\/strong>\s*<p[^>]*><code[^>]*>([0-9a-f]{64})</.exec(livePage)?.[1];
+  ok("verify.html publishes the SHA-256 of this file", liveSha === localSha, `page=${liveSha} file=${localSha}`);
+  const localVersion = /const TOOL_VERSION = "([^"]+)"/.exec(localText)?.[1];
+  const liveVersion = /mandate-verify\.mjs<\/a>, version ([0-9.]+)</.exec(livePage)?.[1];
+  ok("verify.html names this file's version", localVersion !== undefined && liveVersion === localVersion, `page=${liveVersion} file=${localVersion}`);
 }
 
 // ── 2. VECTOR: golden-vector byte equality + signature checks ────────────────────────────────
@@ -116,6 +128,10 @@ console.log("\nVECTOR checks (cross-language golden vectors)");
 const cpVector = JSON.parse(await readFile(join(repoRoot, "test/vectors/checkpoint-signed-payload-v1.vector.json"), "utf8"));
 const epVector = JSON.parse(await readFile(join(repoRoot, "test/vectors/evidence-pack-signed-payload-v3.vector.json"), "utf8"));
 const dsrVector = JSON.parse(await readFile(join(repoRoot, "test/vectors/dsr-access-signed-payload-v4.vector.json"), "utf8"));
+// 2.5.1: each vector's description says what it holds and names nothing from the product's own code.
+for (const [name, v] of [["checkpoint", cpVector], ["signed-record", epVector], ["access-record", dsrVector]]) {
+  ok(`2.5.1: the ${name} vector's description is self-contained`, !/ADR|Tests\b|\.test\.ts|MANDATE_|C#/.test(v.description), v.description);
+}
 
 const cpPayload = buildCheckpointSignedPayload(
   cpVector.tenantId,
@@ -217,6 +233,8 @@ const vectorPrivateKey = createPrivateKey({
   type: "pkcs8",
 });
 const signWithVectorKey = (payload) => new Uint8Array(signNode(null, payload, vectorPrivateKey));
+// 2.5.1: a manifest key that does not decode to 32 bytes.
+const SHORT_KEY = Buffer.alloc(31).toString("base64");
 
 // Minimal stored-entry (method 0) ZIP writer. Each entry carries its CRC-32, which the reader checks
 // (2.3.1: an archive passes only if every common unzip tool would read the same files).
@@ -362,6 +380,16 @@ async function merkleRootNode(hashes) {
   return level[0];
 }
 
+// 2.5.1: a signer that writes a content's length as a signed 64-bit integer would sign a negative length as its two's
+// complement. The script's builder refuses a negative length, so this suite writes those 8 bytes behind the content's SHA-256.
+function signedLengths(payload, contents) {
+  for (const c of contents.filter((x) => x.byteLength < 0)) {
+    const at = Buffer.from(payload).indexOf(Buffer.from(hexToBytes(c.sha256Hex))) + 32;
+    new DataView(payload.buffer, payload.byteOffset, payload.byteLength).setBigInt64(at, BigInt(c.byteLength));
+  }
+  return payload;
+}
+
 const SYN_ERASURE = "e1e1e1e1-0000-4000-8000-000000000001";
 const SYN_ERASURE_LATER = "e2e2e2e2-0000-4000-8000-000000000002";
 
@@ -433,7 +461,7 @@ async function buildSyntheticPack(tweak = {}) {
     merkleRootHex: bytesToHex(sealedRoot),
     signatureHex: bytesToHex(signWithVectorKey(cpPayload)),
     publicKeyBase64: cpVector.publicKeyBase64,
-    publicKeyFingerprint: cpVector.publicKeyFingerprint,
+    publicKeyFingerprint: tweak.checkpointFingerprint ?? cpVector.publicKeyFingerprint,
     createdAt: "2026-01-15T12:00:00+00:00",
   };
   const decisions = [
@@ -452,6 +480,15 @@ async function buildSyntheticPack(tweak = {}) {
     changes[0] = { ...rest, actorType: "mandate_support" };
   }
   if (tweak.trailDrop) changes.pop();
+  // 2.5.1: a change-trail entry the records file does not seal: still queued (no salt), sealed outside this export (a
+  // salt), or one that no longer names who acted.
+  if (tweak.untied) {
+    const entry = { source: "mutation", id: "dddddddd-0000-4000-8000-000000000003", occurredAt: "2026-01-15T11:35:00+00:00", actorType: "tenant_admin",
+      actorId: "eeeeeeee-0000-4000-8000-000000000001", actorDisplay: "a.martin@workspace.example", action: "policy.update", mutationReason: "Client list widened." };
+    changes.push(tweak.untied === "gone" ? { ...entry, actorType: "mandate_support", actorId: null, actorDisplay: null }
+      : tweak.untied === "salted" ? { ...entry, actorSalt: SYN_SALT }
+        : tweak.untied === "other" ? { ...entry, actorDisplay: "someone.else@workspace.example", actorSalt: SYN_SALT } : entry);
+  }
   const erasures = [
     { source: "mutation", id: SYN_ERASURE, occurredAt: "2026-01-15T11:40:00+00:00", actorType: "tenant_admin", actorId: "eeeeeeee-0000-4000-8000-000000000001",
       actorDisplay: "a.martin@workspace.example", actorSalt: SYN_SALT, action: tweak.erasureAction ?? "dsr.delete" },
@@ -486,12 +523,13 @@ async function buildSyntheticPack(tweak = {}) {
 
   const contents = [];
   for (const [name, data] of files) {
-    contents.push({ filename: name, sha256Hex: await sha256Hex(data), byteLength: data.length });
+    contents.push({ filename: name, sha256Hex: await sha256Hex(data), byteLength: tweak.byteLength?.(name, data.length) ?? data.length });
   }
   const manifestVersion = tweak.manifestVersion ?? 3;
   const manifest = {
     manifestVersion,
-    tenantId,
+    // The signature binds the workspace id's 16 bytes, not how its hex is written.
+    tenantId: tweak.upperTenant ? tenantId.toUpperCase() : tenantId,
     generatedAt: tweak.generatedAt ?? "2026-01-15T12:00:00.0000000+00:00",
     windowFrom: tweak.windowFrom ?? "2026-01-15T00:00:00+00:00",
     windowTo: tweak.windowTo ?? "2026-01-15T12:00:00+00:00",
@@ -501,11 +539,12 @@ async function buildSyntheticPack(tweak = {}) {
     contents,
     checkpointIds: [cp.checkpointId],
     signatureHex: "",
-    publicKeyBase64: epVector.publicKeyBase64,
+    publicKeyBase64: tweak.manifestKey ?? epVector.publicKeyBase64,
     publicKeyFingerprint: epVector.publicKeyFingerprint,
   };
-  const payload = buildEvidencePackSignedPayload(
-    tenantId, manifestVersion, manifest.generatedAt, manifest.windowFrom, manifest.windowTo, manifest.truncated, false, false, contents);
+  const payload = signedLengths(buildEvidencePackSignedPayload(
+    tenantId, manifestVersion, manifest.generatedAt, manifest.windowFrom, manifest.windowTo, manifest.truncated, false, false,
+    contents.map((c) => ({ ...c, byteLength: Math.max(0, c.byteLength) }))), contents);
   manifest.signatureHex = bytesToHex(signWithVectorKey(payload));
 
   const entries = [...files].map(([name, data]) => ({ name, data }));
@@ -748,7 +787,24 @@ for (const [label, tweak, expect] of [
     ok("script prints what the records are and what removed one",
       /^Records: \[ ok \] 5 records link in order \(3 decisions, 2 changes\)$/m.test(named.out)
         && /1 record removed under a privacy request on .* keeps its place \(entry e1e1e1e1-0000-4000-8000-000000000001\)/.test(named.out), named.out);
-    ok("script --version reports 2.5.0", /^mandate-verify 2\.5\.0 /.test(cli("--version").out));
+    // 2.5.1: exit 3 means a format this script does not read or a runtime without Ed25519, and the usage says both; a key
+    // that is not 32 bytes is a broken record (exit 1), not a runtime without Ed25519.
+    const help = cli("--help").out;
+    ok("2.5.1: script usage names both meanings of exit 3",
+      /^ {2}3 not checked: a format this verifier does not read \(DIFFERENT FORMAT\), or no Ed25519 in this runtime \(UNSUPPORTED\)$/m.test(help), help);
+    const otherFormat = cli(await save("f.zip", { manifestVersion: 2 }), "--expect-fingerprint", fp);
+    ok("script, a format 2 record -> exit 3 and RESULT: DIFFERENT FORMAT",
+      otherFormat.code === 3 && /^RESULT: DIFFERENT FORMAT \(this pack is format 2/m.test(otherFormat.out), otherFormat.out.slice(-300));
+    const shortKeyRun = cli(await save("k.zip", { manifestKey: SHORT_KEY }));
+    ok("2.5.1: script, a manifest key of 31 bytes -> exit 1 and RESULT: INVALID, not a runtime without Ed25519",
+      shortKeyRun.code === 1 && /^RESULT: INVALID$/m.test(shortKeyRun.out) && /public key must be 32 bytes, got 31/.test(shortKeyRun.out)
+        && !/lacks WebCrypto/.test(shortKeyRun.out), shortKeyRun.out.slice(-500));
+    const accessFormat = join(dir, "d4.zip");
+    writeFileSync(accessFormat, writeZip((await buildSyntheticDsrPack({ manifestVersion: 4 })).entries));
+    const accessFormatRun = cli(accessFormat, "--expect-fingerprint", fp);
+    ok("2.6.0: script, an access record of format 4 -> exit 3 and RESULT: DIFFERENT FORMAT",
+      accessFormatRun.code === 3 && /^RESULT: DIFFERENT FORMAT \(this access record is format 4/m.test(accessFormatRun.out), accessFormatRun.out.slice(-300));
+    ok("script --version reports 2.6.0", /^mandate-verify 2\.6\.0 /.test(cli("--version").out));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -756,6 +812,54 @@ for (const [label, tweak, expect] of [
 {
   const r = await verifyEvidencePackBytes(writeZip((await buildSyntheticPack({ manifestVersion: 2 })).entries), inflateRaw);
   ok("a format 2 pack -> a different format, not INVALID", r.overall === "unsupported" && /format 2/.test(r.manifest.reason ?? ""));
+}
+{
+  // 2.5.1: edge cases found while the public format spec was written.
+  const pack = async (tweak) => verifyEvidencePackBytes(writeZip((await buildSyntheticPack(tweak)).entries), inflateRaw);
+  const shortKey = await pack({ manifestKey: SHORT_KEY });
+  ok("2.5.1: a manifest key of 31 bytes -> invalid with a plain reason, not a runtime without Ed25519",
+    shortKey.overall === "invalid" && shortKey.manifest.reason === "public key must be 32 bytes, got 31", JSON.stringify(shortKey.manifest));
+  const longer = await pack({ byteLength: (name, n) => (name === "README.txt" ? n + 1 : n) });
+  ok("2.5.1: a signed length one more than the file's -> the file fails, though the signature holds",
+    longer.overall === "invalid" && longer.manifest.status === "valid"
+      && longer.files.find((f) => f.path === "README.txt")?.reason === "length does not match manifest", JSON.stringify(longer.files.filter((f) => f.status !== "valid")));
+  const negative = await pack({ byteLength: (name, n) => (name === "README.txt" ? -1 : n) });
+  ok("2.5.1: a negative signed length -> invalid", negative.overall === "invalid" && /README\.txt byteLength: -1/.test(negative.manifest.reason ?? ""),
+    JSON.stringify(negative.manifest));
+
+  // Two exports of a change-trail entry the records file does not seal: who acted is compared, the salt that seals the
+  // name is not (an entry exported while queued has none yet), and an entry that no longer names who acted is a note.
+  const later = "2026-01-15T13:00:00.0000000+00:00";
+  const salted = await pack({ untied: "salted" });
+  const gonePair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "gone" }) }]);
+  ok("2.5.1: an entry that no longer names who acted in the later export -> joins, and named",
+    gonePair.status === "valid" && gonePair.notes.includes(
+      "change-trail entry dddddddd-0000-4000-8000-000000000003 (policy.update) no longer names who acted in b: the account was removed between the exports"),
+    JSON.stringify(gonePair));
+  const queuedPair = checkPackSequence([{ name: "a", result: await pack({ untied: "named" }) }, { name: "b", result: await pack({ generatedAt: later, untied: "salted" }) }]);
+  ok("2.5.1: an entry exported while queued, then with the salt of its seal -> joins", queuedPair.status === "valid", JSON.stringify(queuedPair));
+  const otherPair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "other" }) }]);
+  ok("2.5.1: an entry that names someone else in the later export -> still fails on who acted",
+    otherPair.status === "invalid" && otherPair.kind === "changed" && otherPair.fields.join() === "who acted", JSON.stringify(otherPair));
+
+  // 2.6.0: a checkpoint's own declared fingerprint must name the key that signed it, as the manifest's must since 2.4.0.
+  const cpOtherKey = await pack({ checkpointFingerprint: "00".repeat(32) });
+  ok("2.6.0: a checkpoint that names another key's fingerprint -> refused, though its signature holds",
+    cpOtherKey.overall === "invalid" && cpOtherKey.manifest.status === "valid"
+      && cpOtherKey.checkpoints[0]?.result.reason === "its publicKeyFingerprint names another key than the one that signed it", JSON.stringify(cpOtherKey.checkpoints));
+  const cpUpper = await pack({ checkpointFingerprint: cpVector.publicKeyFingerprint.toUpperCase() });
+  ok("2.6.0: a checkpoint that names its key's fingerprint in capitals -> valid", cpUpper.overall === "valid", JSON.stringify(cpUpper.checkpoints));
+
+  // 2.6.0: two exports of one workspace compare its id as the 16 bytes the signature binds, as one export does inside itself.
+  const following = { windowFrom: "2026-01-15T12:00:00+00:00", windowTo: "2026-01-16T00:00:00+00:00" };
+  const upper = await pack({ ...following, upperTenant: true });
+  ok("2.6.0: an export whose workspace id is written in capitals -> valid alone", upper.overall === "valid", JSON.stringify(upper.manifest));
+  const casePair = checkPackSequence([{ name: "a", result: baseline }, { name: "b", result: upper }]);
+  ok("2.6.0: two exports of one workspace, its id written in capitals in one -> the sequence joins", casePair.status === "valid", JSON.stringify(casePair));
+  const elsewhere = await pack(following);
+  const otherWorkspace = checkPackSequence([{ name: "a", result: baseline },
+    { name: "b", result: { ...elsewhere, identity: { ...elsewhere.identity, tenantId: SYN_OTHER_WORKSPACE } } }]);
+  ok("2.6.0: two exports of different workspaces -> still refused", otherWorkspace.status === "invalid" && otherWorkspace.kind === "workspace", JSON.stringify(otherWorkspace));
 }
 
 {
@@ -897,7 +1001,7 @@ await throws("non-zip input -> reader rejects", async () => {
 // ── 3b. TAMPER, DSR access pack: the same matrix over the other pack a customer receives ─────
 console.log("\nTAMPER matrix (synthetic DSR access pack, test-vector key)");
 
-async function buildSyntheticDsrPack() {
+async function buildSyntheticDsrPack(tweak = {}) {
   const enc = new TextEncoder();
   const files = new Map([
     ["README.txt", enc.encode("Synthetic DSR access pack for the verifier test suite.\n")],
@@ -906,10 +1010,10 @@ async function buildSyntheticDsrPack() {
   ]);
   const contents = [];
   for (const [name, data] of files) {
-    contents.push({ filename: name, sha256Hex: await sha256Hex(data), byteLength: data.length });
+    contents.push({ filename: name, sha256Hex: await sha256Hex(data), byteLength: tweak.byteLength?.(name, data.length) ?? data.length });
   }
   const manifest = {
-    manifestVersion: dsrVector.manifestVersion,
+    manifestVersion: tweak.manifestVersion ?? dsrVector.manifestVersion,
     tenantId: dsrVector.tenantId,
     subjectHashHex: dsrVector.subjectHashHex,
     generatedAt: "2026-01-15T12:00:00.0000000+00:00",
@@ -923,16 +1027,17 @@ async function buildSyntheticDsrPack() {
     opaqueBytes: 0,
     contents,
     signatureHex: "",
-    publicKeyBase64: dsrPublicKeyBase64,
-    publicKeyFingerprint: dsrVector.publicKeyFingerprint,
+    publicKeyBase64: tweak.manifestKey ?? dsrPublicKeyBase64,
+    publicKeyFingerprint: tweak.fingerprint ?? dsrVector.publicKeyFingerprint,
   };
-  const payload = buildDsrAccessSignedPayload(
+  const payload = signedLengths(buildDsrAccessSignedPayload(
     manifest.tenantId, manifest.subjectHashHex, manifest.manifestVersion, manifest.generatedAt,
     manifest.windowFrom, manifest.windowTo, manifest.truncated, manifest.unscannableRows, manifest.degradedRows,
-    manifest.partiallyScannableRows, manifest.opaqueRegions, manifest.opaqueBytes, contents);
+    manifest.partiallyScannableRows, manifest.opaqueRegions, manifest.opaqueBytes,
+    contents.map((c) => ({ ...c, byteLength: Math.max(0, c.byteLength) }))), contents);
   manifest.signatureHex = bytesToHex(signWithVectorKey(payload));
   const entries = [...files].map(([name, data]) => ({ name, data }));
-  entries.push({ name: "manifest.json", data: enc.encode(JSON.stringify(manifest)) });
+  entries.push({ name: "manifest.json", data: enc.encode(JSON.stringify({ ...manifest, ...tweak.extra })) });
   return { entries, manifest };
 }
 
@@ -944,6 +1049,34 @@ const syntheticDsr = await buildSyntheticDsrPack();
   const r = await verifyDsrAccessPackBytes(zip, inflateRaw);
   ok("baseline synthetic DSR pack is valid", r.overall === "valid", JSON.stringify(r.manifest));
   ok("DSR result reports the subject hash the signature binds", r.subjectHashHex === dsrVector.subjectHashHex);
+}
+{
+  // 2.5.1: the access record, the same edge cases as the signed record.
+  const dsr = async (tweak) => verifyDsrAccessPackBytes(writeZip((await buildSyntheticDsrPack(tweak)).entries), inflateRaw);
+  const shortKey = await dsr({ manifestKey: SHORT_KEY });
+  ok("2.5.1: an access record whose key is 31 bytes -> invalid with a plain reason, not a runtime without Ed25519",
+    shortKey.overall === "invalid" && shortKey.manifest.reason === "public key must be 32 bytes, got 31", JSON.stringify(shortKey.manifest));
+  const longer = await dsr({ byteLength: (name, n) => (name === "README.txt" ? n + 1 : n) });
+  ok("2.5.1: an access record whose signed length is one more than the file's -> the file fails, though the signature holds",
+    longer.overall === "invalid" && longer.manifest.status === "valid"
+      && longer.files.find((f) => f.path === "README.txt")?.reason === "length does not match manifest", JSON.stringify(longer.files));
+  const negative = await dsr({ byteLength: (name, n) => (name === "README.txt" ? -1 : n) });
+  ok("2.5.1: an access record with a negative signed length -> invalid",
+    negative.overall === "invalid" && /README\.txt byteLength: -1/.test(negative.manifest.reason ?? ""), JSON.stringify(negative.manifest));
+
+  // 2.6.0: the access record follows the signed record's manifest rules.
+  const extra = await dsr({ extra: { note: "added later" } });
+  ok("2.6.0: an access record manifest member the signature does not cover -> refused, the member named",
+    extra.overall === "invalid" && extra.manifest.reason === "manifest.json carries note, which its signature does not cover", JSON.stringify(extra.manifest));
+  const otherKey = await dsr({ fingerprint: "00".repeat(32) });
+  ok("2.6.0: an access record that names another key's fingerprint -> refused",
+    otherKey.overall === "invalid" && /publicKeyFingerprint names another key/.test(otherKey.manifest.reason ?? ""), JSON.stringify(otherKey.manifest));
+  const upperKey = await dsr({ fingerprint: dsrVector.publicKeyFingerprint.toUpperCase() });
+  ok("2.6.0: an access record that names its key's fingerprint in capitals -> valid", upperKey.overall === "valid", JSON.stringify(upperKey.manifest));
+  const format4 = await dsr({ manifestVersion: 4 });
+  ok("2.6.0: an access record of format 4, signed as such -> a different format, not valid",
+    format4.overall === "unsupported" && format4.format === 4 && /this access record is format 4; this verifier reads format 3/.test(format4.manifest.reason ?? ""),
+    JSON.stringify(format4.manifest));
 }
 {
   const entries = syntheticDsr.entries.map((e) => ({ ...e, data: new Uint8Array(e.data) }));

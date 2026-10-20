@@ -33,12 +33,12 @@ The same fingerprint is published at https://mandateco.ca/verify.html, which run
 
 ## What VALID means
 
-- Every file matches the SHA-256 the signed manifest lists for it, and the file sets match both ways: nothing added, nothing removed. The manifest itself carries nothing its signature does not cover.
+- Every file matches the SHA-256 and the byte length the signed manifest lists for it, and the file sets match both ways: nothing added, nothing removed. The manifest itself, in a signed record or an access record, carries nothing its signature does not cover.
 - The manifest's Ed25519 signature verifies over a canonical payload that binds the workspace id, the format version, when the export was made, the period it covers, three completeness flags, and every filename, hash and byte length.
 - Every checkpoint's signature verifies, and every checkpoint root is recomputed from the records in `chain/links.json`. Each record names the hash of the one before it, so an edited or reordered record, or one taken out from between two others, breaks the chain. A record erased at a person's request or under the retention setting keeps its place by its hash and names the entry that records its erasure.
 - Each decision in the register matches its sealed record field by field, the person included. Each change-trail entry matches its sealed record, each policy version's text matches its hash, and the printed report names the summary it was drawn from. When the register is whole, the summary counts must match the decisions.
 - A rule's list of names (a client list, for example) is sealed in the policy text as a seal and a count. When the export includes the names, they must reproduce the seal; when it leaves them out, the script says so.
-- Every key that signed the record, its checkpoints included, is one you named with `--expect-fingerprint`. The fingerprint printed is the SHA-256 of the key that actually verified, and a manifest that declares a different fingerprint is refused.
+- Every key that signed the record, its checkpoints included, is one you named with `--expect-fingerprint`. The fingerprint printed is the SHA-256 of the key that actually verified, and a manifest or checkpoint that declares a different fingerprint is refused.
 
 ## What VALID does not mean
 
@@ -83,7 +83,7 @@ node test/check.mjs             # offline: vectors, tamper matrix, record walk, 
 MIRROR=1 node test/check.mjs    # also byte-compare this repository against the live site
 ```
 
-The tamper matrix covers content flip, injected file, metadata flips on the completeness flags, missing file, duplicate entry, entry-count bomb, declared-size bomb, non-ZIP input, fingerprint spoofing, unsigned manifest members, malformed manifest entries, and a legitimate high-compression pack that must still pass. The record walk covers edited, swapped and foreign records, a register row, person, change-trail entry, erasure, policy text, sealed list or printed report that no longer matches, and a records file that claims to be partial under a manifest that says complete. The comparison covers a record left out of a re-signed later export, in either order, decisions erased between exports, and a key change. The suite also runs the script itself the way an auditor would and checks its exit codes and result lines. The same file matrix runs over a synthetic access record.
+The tamper matrix covers content flip, injected file, metadata flips on the completeness flags, missing file, duplicate entry, entry-count bomb, declared-size bomb, non-ZIP input, fingerprint spoofing in the manifest and in a checkpoint, unsigned manifest members, malformed manifest entries, a key that is not 32 bytes, a signed length that is not the file's, and a legitimate high-compression pack that must still pass. The record walk covers edited, swapped and foreign records, a register row, person, change-trail entry, erasure, policy text, sealed list or printed report that no longer matches, and a records file that claims to be partial under a manifest that says complete. The comparison covers a record left out of a re-signed later export, in either order, decisions erased between exports, a key change, a change-trail entry that no longer names who acted or was sealed between the exports, and a workspace id written in capitals. The suite also runs the script itself the way an auditor would and checks its exit codes and result lines. The same file matrix runs over a synthetic access record, with its manifest rules and a format the script does not read.
 
 ## Provenance
 

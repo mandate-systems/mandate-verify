@@ -1,6 +1,6 @@
 {
   "name": "mandate-verify",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "private": true,
   "description": "Offline checker for Mandate signed records: per-file SHA-256 against a signed manifest, Ed25519 signatures over canonical payloads, and a walk over the sealed records inside. One file, zero dependencies.",
   "license": "Apache-2.0",

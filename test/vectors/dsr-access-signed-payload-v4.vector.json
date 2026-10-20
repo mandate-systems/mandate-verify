@@ -1,5 +1,5 @@
 {
-  "description": "Cross-language test vector for the ADR-0033 DSR access-response manifest signed-payload layout (DataSubjectAccessRequestSignedPayload v4). Asserted by DataSubjectAccessRequestSignedPayloadTests (C#) and verifyDsr.test.ts (TS). Regenerate with MANDATE_UPDATE_DSR_VECTOR=1.",
+  "description": "Test vector for the manifest payload of an access record (domain tag mandate.dsr.access-manifest-sig.v4). It holds the inputs, the exact payload bytes they build, and an Ed25519 signature over those bytes by a test-only key made from an all-zero seed. A verifier that rebuilds payloadHex from the inputs and verifies signatureHex with publicKeyBase64 reads the layout correctly.",
   "domainTag": "mandate.dsr.access-manifest-sig.v4",
   "seedBase64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
   "tenantId": "00112233-4455-6677-8899-aabbccddeeff",
