@@ -1,8 +1,8 @@
 {
   "name": "mandate-verify",
-  "version": "1.0.0",
+  "version": "2.5.0",
   "private": true,
-  "description": "Offline verifier for Mandate evidence packs: per-file SHA-256 against a signed manifest, Ed25519 signatures over canonical payloads. One file, zero dependencies.",
+  "description": "Offline checker for Mandate signed records: per-file SHA-256 against a signed manifest, Ed25519 signatures over canonical payloads, and a walk over the sealed records inside. One file, zero dependencies.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
