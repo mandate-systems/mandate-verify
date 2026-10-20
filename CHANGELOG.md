@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.6.0 (2026-10-20)
+
+Edge cases found while the format specification was written. A genuine record that passed 2.5.0 passes 2.6.0.
+
+Stricter
+- A checkpoint's own `publicKeyFingerprint` must name the key that signed it, as the manifest's must since 2.4.0.
+- The access record follows the signed record's manifest rules: no member its signature does not cover, a declared fingerprint that names the signing key, and format 3; an access record of another format gets the plain "different format" answer and exit 3.
+- Each file's length must equal the `byteLength` the manifest signs, and a negative or fractional `byteLength` makes the manifest INVALID.
+
+Fixed
+- A manifest key that does not decode to 32 bytes is INVALID with a plain reason (exit 1). 2.5.0 reported it as a runtime without Ed25519 (exit 3).
+- Two exports no longer disagree over `actorSalt`, the salt that seals who acted on a change-trail entry. It is not compared: an entry exported before it was sealed carries none, and an entry that no longer names who acted is a note, as intended.
+- Two exports of one workspace compare its id as the 16 bytes the signatures bind, so a `tenantId` written in capitals no longer reads as another workspace.
+- The usage text gives exit 3 both meanings: a format this script does not read, or no Ed25519 in this runtime.
+
+Repository
+- The descriptions in `test/vectors/` say what each vector holds and name nothing from the product's own code.
+- `test/check.mjs` covers each case above; with `MIRROR=1` it also checks the version and SHA-256 that verify.html names for this file.
+
 ## 2.5.0 (2026-10-20)
 
 The first release here since 1.0.0. The versions between were served from https://mandateco.ca/downloads/mandate-verify.mjs only; this entry covers everything since 1.0.0.

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-const TOOL_VERSION = "2.5.0";
+const TOOL_VERSION = "2.6.0";
 
 const VERIFIER_CORE_BEGIN = "VERIFIER-CORE-BEGIN v2";
 
@@ -130,6 +130,7 @@ export function buildEvidencePackSignedPayload(tenantId, manifestVersion, genera
     const sha = hexToBytes(c.sha256Hex);
     if (sha.length !== 32) throw new Error(`content ${c.filename} sha256 must be 32 bytes`);
     pushBytes(sha);
+    if (!Number.isSafeInteger(c.byteLength) || c.byteLength < 0) throw new Error(`invalid content ${c.filename} byteLength: ${c.byteLength}`);
     pushU64(BigInt(c.byteLength));
   }
 
@@ -137,6 +138,9 @@ export function buildEvidencePackSignedPayload(tenantId, manifestVersion, genera
 }
 
 export async function verifyEd25519(payload, signature, publicKey, invalidReason = "signature does not verify") {
+  if (publicKey.length !== 32) {
+    return { status: "invalid", reason: `public key must be 32 bytes, got ${publicKey.length}` };
+  }
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) {
     return { status: "unsupported", reason: "WebCrypto SubtleCrypto unavailable" };
@@ -231,12 +235,16 @@ export async function verifyCheckpointBundle(bundle) {
     return { status: "invalid", reason: `signed payload reconstruction failed: ${err.message}` };
   }
 
-  return verifyEd25519(
+  const result = await verifyEd25519(
     signedPayload,
     signatureBytes,
     publicKeyBytes,
     "signature does not match checkpoint metadata and merkle root",
   );
+  if (result.status === "valid" && String(bundle.publicKeyFingerprint).toLowerCase() !== await sha256Hex(publicKeyBytes)) {
+    return { status: "invalid", reason: "its publicKeyFingerprint names another key than the one that signed it" };
+  }
+  return result;
 }
 
 export async function sha256Hex(bytes) {
@@ -907,7 +915,7 @@ function changeRowDifference(p, q) {
   const words = { actorType: "who acted", actorId: "who acted", actorDisplay: "who acted", mutationReason: "reason", occurredAt: "time", action: "action" };
   const fields = new Set();
   for (const key of new Set([...Object.keys(p), ...Object.keys(q)])) {
-    if (gone && words[key] === "who acted") continue;
+    if (key === "actorSalt" || (gone && words[key] === "who acted")) continue;
     const same = key === "occurredAt" && instantTicks(p[key]) !== null
       ? instantTicks(p[key]) === instantTicks(q[key])
       : canonicalJson(p[key]) === canonicalJson(q[key]);
@@ -1070,7 +1078,7 @@ export function checkPackSequence(packs) {
     const a = ordered[i - 1];
     const b = ordered[i];
     const fail = (kind, detail, extra = {}) => ({ status: "invalid", kind, reason: `${a.name} then ${b.name}: ${detail}`, detail, ...extra });
-    if (a.result.identity?.tenantId !== b.result.identity?.tenantId) return fail("workspace", "the packs belong to different workspaces");
+    if (!sameWorkspace(a.result.identity?.tenantId, b.result.identity?.tenantId)) return fail("workspace", "the packs belong to different workspaces");
     if (a.result.publicKeyFingerprint !== b.result.publicKeyFingerprint && !(a.trusted === true && b.trusted === true)) {
       return fail("key", "the packs are signed by different keys");
     }
@@ -1138,9 +1146,11 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw) {
     }
     const actual = await sha256Hex(bytes);
     files.push(
-      actual === entry.sha256Hex.toLowerCase()
-        ? { path: entry.filename, status: "valid" }
-        : { path: entry.filename, status: "invalid", reason: "SHA-256 does not match manifest" },
+      actual !== entry.sha256Hex.toLowerCase()
+        ? { path: entry.filename, status: "invalid", reason: "SHA-256 does not match manifest" }
+        : bytes.length !== entry.byteLength
+          ? { path: entry.filename, status: "invalid", reason: "length does not match manifest" }
+          : { path: entry.filename, status: "valid" },
     );
   }
 
@@ -1255,6 +1265,8 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw) {
 
 export const DSR_ACCESS_SIGNED_PAYLOAD_DOMAIN_V4 = "mandate.dsr.access-manifest-sig.v4";
 
+export const SUPPORTED_DSR_MANIFEST_VERSION = 3;
+
 export function buildDsrAccessSignedPayload(tenantId, subjectHashHex, manifestVersion, generatedAt, windowFrom, windowTo, truncated, unscannableRows, degradedRows, partiallyScannableRows, opaqueRegions, opaqueBytes, contents) {
   const sorted = [...contents].sort((a, b) => (a.filename < b.filename ? -1 : a.filename > b.filename ? 1 : 0));
   const enc = new TextEncoder();
@@ -1316,6 +1328,7 @@ export function buildDsrAccessSignedPayload(tenantId, subjectHashHex, manifestVe
     const sha = hexToBytes(c.sha256Hex);
     if (sha.length !== 32) throw new Error(`content ${c.filename} sha256 must be 32 bytes`);
     pushBytes(sha);
+    if (!Number.isSafeInteger(c.byteLength) || c.byteLength < 0) throw new Error(`invalid content ${c.filename} byteLength: ${c.byteLength}`);
     pushU64(BigInt(c.byteLength));
   }
 
@@ -1341,6 +1354,17 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     return invalid(`manifest parse failed: ${err.message}`);
   }
   if (!Array.isArray(manifest.contents)) return invalid("manifest.contents is not an array");
+  if (manifest.manifestVersion !== SUPPORTED_DSR_MANIFEST_VERSION) {
+    return {
+      manifest: {
+        status: "unsupported",
+        reason: `this access record is format ${manifest.manifestVersion}; this verifier reads format ${SUPPORTED_DSR_MANIFEST_VERSION}. Use the verifier released with the record, or the latest from mandateco.ca/verify.html`,
+      },
+      files: [],
+      overall: "unsupported",
+      format: manifest.manifestVersion,
+    };
+  }
 
   const files = [];
   for (const entry of manifest.contents) {
@@ -1355,9 +1379,11 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     }
     const actual = await sha256Hex(bytes);
     files.push(
-      actual === entry.sha256Hex.toLowerCase()
-        ? { path: entry.filename, status: "valid" }
-        : { path: entry.filename, status: "invalid", reason: "SHA-256 does not match manifest" },
+      actual !== entry.sha256Hex.toLowerCase()
+        ? { path: entry.filename, status: "invalid", reason: "SHA-256 does not match manifest" }
+        : bytes.length !== entry.byteLength
+          ? { path: entry.filename, status: "invalid", reason: "length does not match manifest" }
+          : { path: entry.filename, status: "valid" },
     );
   }
 
@@ -1367,6 +1393,9 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     files.push({ path: name, status: "invalid", reason: "file present in pack but not listed in manifest.contents" });
   }
 
+  const MANIFEST_FIELDS = ["manifestVersion", "tenantId", "subjectHashHex", "generatedAt", "windowFrom", "windowTo", "truncated", "unscannableRows",
+    "degradedRows", "partiallyScannableRows", "opaqueRegions", "opaqueBytes", "contents", "signatureHex", "publicKeyBase64", "publicKeyFingerprint"];
+  const unsignedFields = Object.keys(manifest).filter((k) => !MANIFEST_FIELDS.includes(k));
   let manifestResult;
   let manifestFingerprint;
   try {
@@ -1389,6 +1418,12 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     const publicKey = base64ToBytes(manifest.publicKeyBase64);
     manifestFingerprint = await sha256Hex(publicKey);
     manifestResult = await verifyEd25519(payload, signature, publicKey, "manifest signature does not match the pack contents");
+    if (manifestResult.status === "valid" && unsignedFields.length > 0) {
+      manifestResult = { status: "invalid", reason: `manifest.json carries ${unsignedFields.join(", ")}, which its signature does not cover` };
+    } else if (manifestResult.status === "valid" && manifest.publicKeyFingerprint !== undefined
+      && String(manifest.publicKeyFingerprint).toLowerCase() !== manifestFingerprint) {
+      manifestResult = { status: "invalid", reason: "manifest.publicKeyFingerprint names another key than the one that signed it" };
+    }
   } catch (err) {
     manifestResult = { status: "invalid", reason: `manifest verification failed: ${err.message}` };
   }
@@ -1445,7 +1480,8 @@ function usage() {
     "A folder stands for every record in it, in name order: unzip a complete export and give the verifier its folder. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.",
     "",
     "Checks a Mandate signed record or access record offline (the kind is read off the manifest). Exit codes:",
-    "  0 valid, signed by a key you named   1 invalid or fingerprint mismatch   2 usage/IO/ZIP error   3 no Ed25519 support",
+    "  0 valid, signed by a key you named   1 invalid or fingerprint mismatch   2 usage/IO/ZIP error",
+    "  3 not checked: a format this verifier does not read (DIFFERENT FORMAT), or no Ed25519 in this runtime (UNSUPPORTED)",
     "  4 not verified: unchanged since signing, but the key was not checked: name the fingerprint from your agreement with --expect-fingerprint",
   ].join("\n");
 }
@@ -1503,8 +1539,6 @@ async function main(argv) {
 
   let worst = 0;
   const verified = [];
-  // A folder (a complete export, in name order) is checked one neighbour at a time and each pack let go after, so a
-  // long export needs no more memory than two packs; packs named one by one are sorted by their windows first.
   let previous = null;
   let streamedSequence = null;
   const streamedNotes = [];
@@ -1609,7 +1643,7 @@ async function verifyOne(packPath, expectFingerprints, asJson) {
       console.log(`Generated      : ${localTime(result.identity.generatedAt)}`);
       console.log(`Period         : ${result.identity.windowFrom ? localTime(result.identity.windowFrom) : "(open)"} to ${result.identity.windowTo ? localTime(result.identity.windowTo) : "(open)"}`);
     }
-    if (kind === "dsr") {
+    if (kind === "dsr" && result.subjectHashHex !== undefined) {
       console.log(`Person         : ${result.subjectHashHex} (keyed hash)`);
       console.log(
         `Complete       : ${result.truncated ? "no, this access record holds part of what was found" : "yes"}; `
