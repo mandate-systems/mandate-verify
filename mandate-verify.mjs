@@ -252,7 +252,7 @@ export async function verifyCheckpointBundle(bundle) {
   return result;
 }
 
-// 2.18.0 (ADR-0075): an outside timestamp on each checkpoint. Format 2 of a checkpoint carries timestampTokenBase64, an RFC 3161
+// 2.18.0: an outside timestamp on each checkpoint. Format 2 of a checkpoint carries timestampTokenBase64, an RFC 3161
 // token over the checkpoint's signed payload, its signature and its key, or null while none has been obtained. The token
 // is checked offline: over these bytes, signed by a certificate for timestamping only, whose chain leads to a root this
 // checker ships, every certificate valid at the stamped time. A checkpoint without one is reported, never invalid.
@@ -711,8 +711,8 @@ export async function verifyTimestampToken(tokenBytes, imprinted, roots) {
   }
 }
 
-// The roots an outside timestamp may lead to (ADR-0075), as DER in base64: the same set as
-// src/Mandate.Shared/Audit/timestamp-roots.json, which the server checks a token against before storing it.
+// The roots an outside timestamp may lead to, as DER in base64: the same set Mandate checks a token against before
+// storing it.
 export const TIMESTAMP_ROOTS = [
   { name: "DigiCert Trusted Root G4", sha256: "552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988", derBase64: "MIIFkDCCA3igAwIBAgIQBZsbV56OITLiOQe9p3d1XDANBgkqhkiG9w0BAQwFADBiMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMSEwHwYDVQQDExhEaWdpQ2VydCBUcnVzdGVkIFJvb3QgRzQwHhcNMTMwODAxMTIwMDAwWhcNMzgwMTE1MTIwMDAwWjBiMQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cuZGlnaWNlcnQuY29tMSEwHwYDVQQDExhEaWdpQ2VydCBUcnVzdGVkIFJvb3QgRzQwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC/5pBzaN675F1KPDAiMGkz7MKnJS7JIT3yithZwuEppz1Yq3aaza57G4QNxDAf8xukOBbrVsaXbR2rsnnyyhHS5F/WBTxSD1Ifxp4VpX6+n6lXFllVcq9ok3DCsrp1mWpzMpTREEQQLt+C8weE5nQ7bXHiLQwb7iDVySAdYyktzuxeTsiT+CFhmzTrBcZe7FsavOvJz82sNEBfsXpm7nfISKhmV1efVFiODCu3T6cw2Vbuyntd463JT17lNecxy9qTXtyOj4DatpGYQJB5w3jHtrHEtWoYOAMQjdjUN6QuBX2I9YI+EJFwq1WCQTLX2wRzKm6RAXwhTNS8rhsDdV14Ztk6MUSaM0C/CNdaSaTC5qmgZ92kJ7yhTzm1EVgX9yRcRo9k98FpiHaYdj1ZXUJ2h4mXaXpI8OCiEhtmmnTK3kse5w5jrubU75KSOp493ADkRSWJtppEGSt+wJS00mFt6zPZxd9LBADMfRyVw4/3IbKyEbe7f/LVjHAsQWCqsWMYRJUadmJ+9oCw++hkpjPRiQfhvbfmQ6QYuKZ3AeEPlAwhHbJUKSWJbOUOUlFHdL4mrLZBdd56rF+NP8m800ERElvlEFDrMcXKchYiCd98THU/Y+whX8QgUWtvsauGi0/C1kVfnSD8oR7FwI+isX4KJpn15GkvmB0t9dmpsh3lGwIDAQABo0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQU7NfjgtJxXWRM3y5nP+e6mK4cD08wDQYJKoZIhvcNAQEMBQADggIBALth2X2pbL4XxJEbw6GiAI3jZGgPVs93rnD5/ZpKmbnJeFwMDF/k5hQpVgs2SV1EY+CtnJYYZhsjDT156W1r1lT40jzBQ0CuHVD1UvyQO7uYmWlrx8GnqGikJ9yd+SeuMIW59mdNOj6PWTkiU0TryF0Dyu1Qen1iIQqAyHNm0aAFYF/opbSnr6j3bTWcfFqK1qI4mfN4i/RN0iAL3gTujJtHgXINwBQy7zBZLq7gcfJW5GqXb5JQbZaNaHqasjYUegbyJLkJEVDXCLG4iXqEI2FCKeWjzaIgQdfRnGTZ6iahixTXTBmyUEFxPT9NcCOGDErcgdLMMpSEDQgJlxxPwO5rIHQw0uA5NBCFIRUBCOhVMt5xSdkoF1BN5r5N0XWs0Mr7QbhDparTwwVETyw2m+L64kW4I1NsBm9nVX9GtUw/bihaeSbSpKhil9Ie4u1Ki7wb/UdKDd9nZn6yW0HQO+T0O/QEY+nvwlQAUaCKKsnOeMzV6ocEGLPOr0mIr/OSmbaz5mEP0oUA51Aa5BuVnRmhuZyxm7EAHu/QD09CbMkKvO5D+jpxpchNJqU1/YldvIViHTLSoCtU7ZpXwdv6EM8Zt4tKG48BtieVU+i2iW1bvGjUI+iLUaJW+fCmgKDWHrO8Dw9TdSmq6hN35N6MgSGtBxBHEa2HPQfRdbzP82Z+" },
 ];
@@ -1319,7 +1319,7 @@ export async function changeTrailEntrySeal(row, tenantId) {
     ...(record === null ? [] : [sealOptional(record)])));
 }
 
-// 2.17.0 (ADR-0071 §14): the sealed documents the pack's assessment files carry, each as the exact text Mandate hashed: an
+// 2.17.0: the sealed documents the pack's assessment files carry, each as the exact text Mandate hashed: an
 // assessment's document and the record of a finding's review, an artifact version, a measure's value and a version of an
 // impact assessment. Each is recomputed and must equal the hash beside it and the hash its change-trail entry carries,
 // whose seal the entry check ties to the records; the readable row beside it must say what the document says, so a reader
@@ -1537,7 +1537,7 @@ async function checkSealedDocuments(read, has, entries, sealed, period) {
   return decisions ?? result;
 }
 
-// 2.19.0 (ADR-0071 §8): a finding's review decision and an assessment's sign-off are columns Mandate keeps beside the sealed
+// 2.19.0: a finding's review decision and an assessment's sign-off are columns Mandate keeps beside the sealed
 // records, so each is read against them. A pack shows them as its window left them. Each finding must show the decision
 // its latest sealed review of the window gives, or none when no review decides it, whenever the reviews file is whole. An
 // assessment shows as signed off exactly when every finding has a decision, at the time and by the person of the last one,
@@ -1705,7 +1705,7 @@ function recordRules(record) {
     : [];
 }
 
-// 2.16.0 (ADR-0073 §8): the final decisions a department's case system sent, each request one batch whose record's
+// 2.16.0: the final decisions a department's case system sent, each request one batch whose record's
 // SHA-256 rides a change-trail entry sealed like any other. A decision is salted, so one case can be shown and checked
 // alone without disclosing the others; an erased decision keeps only its digest in its batch's list. A batch whose entry
 // is not sealed in this export's records is counted apart and never passes, since nothing outside the file vouches for it.
@@ -2947,7 +2947,7 @@ export function partsMissing(names) {
   return `${n.firstMissing}${n.missing > 1 ? ` and ${n.missing - 1} more are` : " is"} missing, so ${n.of - n.missing} of the ${n.of} parts were given`;
 }
 
-// 2.15.0: a complete export, the archive the console downloads for a long period (ADR-0032), is known by what it holds,
+// 2.15.0: a complete export, the archive the console downloads for a long period, is known by what it holds,
 // whatever it is named: records named part-K-of-N.zip and no manifest.json, the rule the console's own check uses. It
 // is not signed, so it is never checked as a record. Null for anything else.
 export function completeExportOf(names) {
