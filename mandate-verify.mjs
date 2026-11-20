@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-const TOOL_VERSION = "2.20.0";
+const TOOL_VERSION = "2.21.0";
 
 const VERIFIER_CORE_BEGIN = "VERIFIER-CORE-BEGIN v2";
 
@@ -18,8 +18,8 @@ export const EVIDENCE_PACK_SIGNED_PAYLOAD_DOMAIN_V3 = "mandate.evidence-pack.man
 export const ZIP_MAX_TOTAL_BYTES = 52428800;
 export const ZIP_MAX_FILE_COUNT = 1032;
 
-// Mandate's own markers sit under a rule-id prefix the policy compiler refuses for any rule a customer writes, so an id
-// alone tells a note from a rule.
+// Mandate's own markers sit under a rule-id prefix Mandate refuses for any rule a customer writes, so an id alone tells a
+// note from a rule.
 const NOTE_PREFIX = "policy.";
 const NOT_READ_NOTE = "policy.body_unscannable";
 
@@ -765,8 +765,8 @@ export const TIMESTAMP_LATE_MS = 24 * 60 * 60 * 1000;
 export const TIMESTAMP_TAIL_ALLOWANCE_MS = 2 * 60 * 60 * 1000;
 
 // Over the checkpoints of one export, in the order of the records they seal (`position`, from chain/links.json; a
-// checkpoint the records file does not cover has none and is left out of the order). Mandate stamps a tenant's
-// checkpoints one after another in that order and never goes back, so honest token times never fall along the chain
+// checkpoint the records file does not cover has none and is left out of the order). Mandate stamps the checkpoints of
+// a Mandate ID one after another in that order and never goes back, so honest token times never fall along the chain
 // and no checkpoint without a token sits before one with a token. Either is what a checkpoint replaced or a token removed
 // after the fact looks like: `problem` then says which. `lastRecordMs` is the time of the last record the checkpoint seals.
 export function timestampSequence(entries, generatedAtMs, require = false) {
@@ -1198,6 +1198,8 @@ function u32Bytes(n) {
 // What a version changed, as layout v2 seals it: a keyword list's change by its counts, never its entries. Every
 // field a change can carry is sealed, so one the trail never has is refused rather than read past.
 const TRAIL_CHANGE_FIELDS = ["kind", "ruleId", "reason", "from", "to", "added", "removed", "addedCount", "removedCount"];
+const namesEntries = (c) => c?.kind === "keywords" && (c.added != null || c.removed != null);
+const namesListEntries = (changes) => Array.isArray(changes) && changes.some(namesEntries);
 function trailChanges(changes) {
   if (changes === null || changes === undefined) return null;
   if (!Array.isArray(changes)) throw new Error("it is malformed");
@@ -1210,7 +1212,7 @@ function trailChanges(changes) {
   const count = (v) => v === null || v === undefined || (Number.isInteger(v) && v >= 0);
   return concatBytes(u32Bytes(changes.length), ...changes.map((c) => {
     if (typeof c?.kind !== "string" || typeof c.ruleId !== "string" || !count(c.addedCount) || !count(c.removedCount)) throw new Error("it is malformed");
-    if (c.kind === "keywords" && (c.added != null || c.removed != null)) throw new Error("it names a list's entries, which the change trail never carries");
+    if (namesEntries(c)) throw new Error("it names a list's entries, which the change trail never carries");
     const extra = Object.keys(c).find((k) => !TRAIL_CHANGE_FIELDS.includes(k));
     if (extra !== undefined) throw new Error(`a change carries a field the change trail never has (${extra})`);
     return concatBytes(sealField(UTF8.encode(c.kind)), sealField(UTF8.encode(c.ruleId)), sealOptional(text(c.reason)), sealOptional(text(c.from)),
@@ -1293,7 +1295,7 @@ function trailRecord(r) {
   return concatBytes(sealField(UTF8.encode(r.kind)), sealField(uuidToRfc4122Bytes(r.id)), sealField(sha));
 }
 
-export async function changeTrailEntrySeal(row, tenantId) {
+async function trailEntryFields(row, tenantId) {
   const text = (v) => (v === null || v === undefined ? null : UTF8.encode(String(v)));
   const uuid = (v) => (v === null || v === undefined ? null : uuidToRfc4122Bytes(String(v)));
   const ticks = instantTicks(row.occurredAt);
@@ -1303,6 +1305,16 @@ export async function changeTrailEntrySeal(row, tenantId) {
   if (row.actorDisplay != null && typeof row.actorSalt !== "string") throw new Error("it names who acted without the salt that seals the name");
   const actorSeal = row.actorDisplay == null ? null : await nameSeal(row.actorSalt, String(row.actorDisplay));
   const t = row.transition ?? null;
+  return concatBytes(
+    sealField(uuidToRfc4122Bytes(String(row.id))), sealField(uuidToRfc4122Bytes(String(tenantId))), sealField(time),
+    sealField(UTF8.encode(row.action)), sealField(UTF8.encode(row.actorType)),
+    sealOptional(uuid(row.actorId)), sealOptional(actorSeal), sealOptional(text(row.mutationReason)),
+    sealOptional(text(t?.kind)), sealOptional(text(t?.reason)), sealOptional(uuid(t?.policyId)),
+    sealOptional(uuid(t?.versionId)), sealOptional(uuid(t?.priorVersionId)), sealOptional(text(t?.version)));
+}
+
+export async function changeTrailEntrySeal(row, tenantId) {
+  const fields = await trailEntryFields(row, tenantId);
   const mandate = trailMandate(row.mandate);
   const assessment = trailAssessment(row.assessment);
   const record = trailRecord(row.record);
@@ -1310,14 +1322,23 @@ export async function changeTrailEntrySeal(row, tenantId) {
   return sha256Bytes(concatBytes(
     UTF8.encode(mandate !== null ? "mandate.change-trail-entry.v3" : assessment !== null ? "mandate.change-trail-entry.v4"
       : record !== null ? "mandate.change-trail-entry.v5" : "mandate.change-trail-entry.v2"), Uint8Array.of(0),
-    sealField(uuidToRfc4122Bytes(String(row.id))), sealField(uuidToRfc4122Bytes(String(tenantId))), sealField(time),
-    sealField(UTF8.encode(row.action)), sealField(UTF8.encode(row.actorType)),
-    sealOptional(uuid(row.actorId)), sealOptional(actorSeal), sealOptional(text(row.mutationReason)),
-    sealOptional(text(t?.kind)), sealOptional(text(t?.reason)), sealOptional(uuid(t?.policyId)),
-    sealOptional(uuid(t?.versionId)), sealOptional(uuid(t?.priorVersionId)), sealOptional(text(t?.version)),
-    sealOptional(trailChanges(t?.changes)), ...(mandate === null ? [] : [sealOptional(mandate)]), ...(assessment === null ? [] : [sealOptional(assessment)]),
-    ...(record === null ? [] : [sealOptional(record)])));
+    fields, sealOptional(trailChanges(row.transition?.changes)), ...(mandate === null ? [] : [sealOptional(mandate)]),
+    ...(assessment === null ? [] : [sealOptional(assessment)]), ...(record === null ? [] : [sealOptional(record)])));
 }
+
+// 2.21.0: before checker 2.7.0, Mandate sealed every entry under v1, v2's fields without what a version changed. A seal
+// under v1 that equals the sealed record shows the entry is unchanged in everything v1 covers, so such a record is in a
+// layout this checker does not read, not a changed one.
+async function changeTrailEntrySealV1(row, tenantId) {
+  return sha256Bytes(concatBytes(UTF8.encode("mandate.change-trail-entry.v1"), Uint8Array.of(0), await trailEntryFields(row, tenantId)));
+}
+
+const EARLIER_LAYOUT = {
+  before: "2.7.0",
+  reads: "2.6.0",
+  reason: "this record's change trail is sealed in the layout Mandate used until checker 2.7.0 (2026-10-25), which this checker does not "
+    + "read. Checker 2.6.0 reads it: tag v2.6.0 at github.com/mandate-systems/mandate-verify",
+};
 
 // 2.17.0: the sealed documents the pack's assessment files carry, each as the exact text Mandate hashed: an
 // assessment's document and the record of a finding's review, an artifact version, a measure's value and a version of an
@@ -1537,8 +1558,8 @@ async function checkSealedDocuments(read, has, entries, sealed, period) {
   return decisions ?? result;
 }
 
-// 2.19.0: a finding's review decision and an assessment's sign-off are columns Mandate keeps beside the sealed
-// records, so each is read against them. A pack shows them as its window left them. Each finding must show the decision
+// 2.19.0: a finding's review decision and an assessment's sign-off are kept beside the sealed records, not in them,
+// so each is read against them. A pack shows them as its window left them. Each finding must show the decision
 // its latest sealed review of the window gives, or none when no review decides it, whenever the reviews file is whole. An
 // assessment shows as signed off exactly when every finding has a decision, at the time and by the person of the last one,
 // and the change trail's sign-off (a record of kind assessment_sign_off, sealed by v5 with the assessment's id and its
@@ -1889,9 +1910,11 @@ async function walkChainFiles(fileBytes, expect) {
   let recomputed = 0;
   let notCovered = 0;
   const checkpointWindows = [];
+  let checkpointsFormat1 = true;
   for (const [name, bytes] of fileBytes) {
     if (!name.startsWith("checkpoints/") || !name.endsWith(".json")) continue;
     const checkpoint = JSON.parse(RECORD_TEXT.decode(bytes));
+    if (checkpoint.schemaVersion !== 1) checkpointsFormat1 = false;
     const start = byId.get(String(checkpoint.windowStartEventId).toLowerCase());
     const end = byId.get(String(checkpoint.windowEndEventId).toLowerCase());
     if (start === undefined || end === undefined || end < start) {
@@ -2016,10 +2039,23 @@ async function walkChainFiles(fileBytes, expect) {
   ];
   const changesTiedIds = new Set();
   const changesNotTiedIds = new Set();
+  // 2.21.0: whether the record is in the layout used before 2.7.0 is known only once every entry is read, so what that
+  // layout would explain is held until then; anything it would not explain fails at once.
+  const sealedV1 = new Set();
+  let v1Failure = null;
+  let namesFailure = null;
+  let laterFacts = false;
   for (const [file, list] of changeSources) {
     for (const row of Array.isArray(list) ? list : []) {
       if (!row || typeof row.id !== "string") return invalid(`${file} holds a change-trail entry with no id`);
       const id = row.id.toLowerCase();
+      const sealed = changeRecords.get(id);
+      if (row.mandate != null || row.assessment != null || row.record != null) laterFacts = true;
+      else if (sealed && sameBytes(await changeTrailEntrySealV1(row, expect.tenantId).catch(() => new Uint8Array(0)), sealed.request_body_hash)) {
+        sealedV1.add(id);
+        v1Failure ??= `change-trail entry ${row.id} (${row.action}) in ${file} differs from its sealed record`;
+        continue;
+      }
       // Whether or not its seal is in this export yet, an entry never names a list's entries, nor a mandate, assessment or record fact no seal covers.
       try {
         trailChanges(row.transition?.changes);
@@ -2027,9 +2063,13 @@ async function walkChainFiles(fileBytes, expect) {
         trailAssessment(row.assessment);
         trailRecord(row.record);
       } catch (err) {
-        return invalid(`change-trail entry ${row.id} in ${file} cannot be checked: ${err.message}`);
+        const reason = `change-trail entry ${row.id} in ${file} cannot be checked: ${err.message}`;
+        // Before 2.7.0 a list's change named its entries, as an entry made after the last seal still does in such a record.
+        if (sealed || !namesListEntries(row.transition?.changes)) return invalid(reason);
+        namesFailure ??= reason;
+        changesNotTiedIds.add(id);
+        continue;
       }
-      const sealed = changeRecords.get(id);
       if (!sealed) {
         changesNotTiedIds.add(id);
         continue;
@@ -2047,6 +2087,12 @@ async function walkChainFiles(fileBytes, expect) {
     }
   }
   for (const id of changesTiedIds) changesNotTiedIds.delete(id);
+  // A record of the earlier layout bears every mark of it: each sealed entry under v1, and nothing that came later, neither
+  // another layout's facts, nor the report's section on other AI tools (2.8.0), nor a checkpoint's outside timestamp
+  // (2.18.0). Any other mix is no layout Mandate wrote, so it fails as before.
+  const reportSummary = read("report/summary.json");
+  const before270 = sealedV1.size > 0 && changesTiedIds.size === 0 && !laterFacts && checkpointsFormat1 && reportSummary?.imported === undefined;
+  if (!before270 && (v1Failure ?? namesFailure)) return invalid(v1Failure ?? namesFailure);
 
   const finalDecisions = fileBytes.has(FINAL_DECISIONS_FILE) ? await checkFinalDecisions(finalDecisionsFile, changeRecords, expect.tenantId) : null;
   if (finalDecisions?.reason) return invalid(finalDecisions.reason);
@@ -2114,10 +2160,9 @@ async function walkChainFiles(fileBytes, expect) {
   // among the rule hits as they were made; a later version is not compared, and the result says why.
   let importsCompared = false;
   let importsNotCompared = "";
-  const reportSummary = read("report/summary.json");
   if (reportSummary) {
     const byFeed = reportSummary.imported?.byFeed;
-    if (!Array.isArray(byFeed)) return invalid("report/summary.json does not say what other AI tools reported");
+    if (!Array.isArray(byFeed) && !before270) return invalid("report/summary.json does not say what other AI tools reported");
     const instant = (v) => (v === null || v === undefined ? null : Date.parse(String(v)));
     const key = (f) => JSON.stringify([f?.feed, f?.rows, f?.rowsWithRuleHits, f?.rowsNotReadInFull ?? null, f?.coversWindow,
       instant(f?.sourceFrom), instant(f?.sourceTo)]);
@@ -2125,7 +2170,7 @@ async function walkChainFiles(fileBytes, expect) {
     const carried = [...fileBytes.keys()].filter((n) => /^imports\/[^/]+\.json$/.test(n)).map((n) => n.slice(8, -5)).sort();
     const later = carried.map((feed) => [feed, read(`imports/${feed}.json`)?.schemaVersion]).find(([, v]) => Number.isSafeInteger(v) && v > 2);
     if (later) importsNotCompared = `imports/${later[0]}.json is version ${later[1]}; this checker reads versions 1 and 2`;
-    else {
+    else if (Array.isArray(byFeed)) {
       for (const feed of carried) {
         const file = read(`imports/${feed}.json`);
         if (file?.schemaVersion !== 2 || !Array.isArray(file.rows)) continue;
@@ -2165,7 +2210,9 @@ async function walkChainFiles(fileBytes, expect) {
       }
       importsCompared = true;
     }
-    if (expect.inProgress !== undefined && (reportSummary.period?.inProgress === true) !== expect.inProgress) {
+    // Before 2.10.0 the report never said its period was in progress.
+    const saysInProgress = reportSummary.period?.inProgress;
+    if (expect.inProgress !== undefined && !(before270 && saysInProgress === undefined) && (saysInProgress === true) !== expect.inProgress) {
       return invalid(expect.inProgress
         ? "report/summary.json does not say that its period had not ended when the record was made"
         : "report/summary.json says that its period had not ended when the record was made, but the record was made after it ended");
@@ -2191,7 +2238,12 @@ async function walkChainFiles(fileBytes, expect) {
     if (row?.source === "decision") outcomes[row.action] = (outcomes[row.action] ?? 0) + 1;
   }
   const result = {
-    status: "valid",
+    status: before270 ? "unsupported" : "valid",
+    ...(before270 ? {
+      reason: `${sealedV1.size} change-trail entr${sealedV1.size === 1 ? "y is" : "ies are"} sealed in the layout used before checker `
+        + `${EARLIER_LAYOUT.before}, which this checker does not read`,
+      sealedBefore: EARLIER_LAYOUT.before,
+    } : {}),
     records: links.length - deleted,
     removed: deleted,
     removedInPeriod: periodFrom === null || periodTo === null
@@ -2443,9 +2495,17 @@ export function checkPackSequence(packs) {
   const ordered = [...packs].sort((a, b) => Date.parse(a.result.identity?.windowFrom ?? 0) - Date.parse(b.result.identity?.windowFrom ?? 0));
   const notes = [];
   const erased = [];
+  let notRead = null;
   for (let i = 1; i < ordered.length; i++) {
     const a = ordered[i - 1];
     const b = ordered[i];
+    // 2.21.0: a part in a format this checker does not read cannot be compared, but every pair without it still is, so a
+    // failure there is not hidden behind it.
+    const unread = [a, b].find((p) => p.result.format !== undefined);
+    if (unread) {
+      notRead ??= unread.name;
+      continue;
+    }
     const fail = (kind, detail, extra = {}) => ({ status: "invalid", kind, reason: `${a.name} then ${b.name}: ${detail}`, detail, ...extra });
     if (!sameMandateId(a.result.identity?.tenantId, b.result.identity?.tenantId)) return fail("mandate-id", "the packs have different Mandate IDs");
     if (a.result.publicKeyFingerprint !== b.result.publicKeyFingerprint && !(a.trusted === true && b.trusted === true)) {
@@ -2468,6 +2528,7 @@ export function checkPackSequence(packs) {
     if (!ja.last || !jb.first) continue;
     if (!ja.byId.has(jb.first.id) && jb.first.prev !== ja.last.hash) return fail("continuity", "the later pack does not continue from the earlier one");
   }
+  if (notRead) return { status: "unsupported", kind: "format", reason: `${notRead} is in a format this checker does not read` };
   return { status: "valid", packs: ordered.length, notes, erased, ...sequenceProgress(ordered) };
 }
 
@@ -2637,6 +2698,8 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
     || checkpoints.some((c) => c.result.status === "invalid")
     || timestamps.problem !== null
     || chain.status === "invalid";
+  // An earlier layout is answered only when nothing that layout leaves unexplained failed.
+  const earlierLayout = !anyUnsupported && !anyInvalid && chain.status === "unsupported";
 
   return {
     manifest: manifestResult,
@@ -2644,7 +2707,8 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
     checkpoints,
     chain,
     timestamps,
-    overall: anyUnsupported ? "unsupported" : anyInvalid ? "invalid" : "valid",
+    overall: anyUnsupported || earlierLayout ? "unsupported" : anyInvalid ? "invalid" : "valid",
+    ...(earlierLayout ? { format: manifest.manifestVersion, sealedBefore: EARLIER_LAYOUT.before, formatReason: EARLIER_LAYOUT.reason } : {}),
     publicKeyFingerprint: manifestFingerprint,
     checkpointKeysDiffer,
     truncated: manifest.truncated,
@@ -2938,18 +3002,19 @@ function partNumbering(names) {
 }
 
 // 2.15.0: why records named as the parts of one complete export cannot stand for all of it, or "" when they can or are
-// not named so.
+// not named so. 2.21.0: one part alone is asked the same, since its name says how many there are.
 export function partsMissing(names) {
   const n = partNumbering(names);
   if (!n) return "";
   if (n.twice) return `${n.twice} was given twice`;
   if (n.missing === 0) return "";
-  return `${n.firstMissing}${n.missing > 1 ? ` and ${n.missing - 1} more are` : " is"} missing, so ${n.of - n.missing} of the ${n.of} parts were given`;
+  const given = n.of - n.missing;
+  return `${n.firstMissing}${n.missing > 1 ? ` and ${n.missing - 1} more are` : " is"} missing, so ${given} of the ${n.of} parts ${given === 1 ? "was" : "were"} given`;
 }
 
-// 2.15.0: a complete export, the archive the console downloads for a long period, is known by what it holds,
-// whatever it is named: records named part-K-of-N.zip and no manifest.json, the rule the console's own check uses. It
-// is not signed, so it is never checked as a record. Null for anything else.
+// 2.15.0: a complete export, the archive Mandate downloads for a long period, is known by what it holds, whatever it is
+// named: records named part-K-of-N.zip and no manifest.json. It is not signed, so it is never checked as a record. Null
+// for anything else.
 export function completeExportOf(names) {
   if (!Array.isArray(names) || names.includes("manifest.json")) return null;
   const parts = names.filter((n) => PART_NAME.test(n)).sort();
@@ -2975,26 +3040,30 @@ function usage() {
     "Each export covers its period up to a minute before it says it was made, or only the span its records hold when it says it is partial;",
     "what that leaves out is named, and so is any decision erased between the exports.",
     "An export made before its period ended is in progress: it holds what was recorded up to when it was made, and says so.",
-    "A later export must then start no later than when the one in progress was made, or the time between is in neither.",
+    "A later export must then start no later than a minute before the one in progress was made, or the time between is in neither.",
     "A folder stands for every record in it, in name order: unzip a complete export and give the verifier its folder. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.",
     "A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the verifier the folder.",
-    "Parts named as a complete export names them (part-0001-of-0012.zip) must all be there: a part missing is named.",
+    "Parts named as a complete export names them (part-0001-of-0012.zip) must all be there, even when one is given alone: a part missing is named and the check fails.",
     "",
     "Checks a Mandate signed record or access record offline (the kind is read off the manifest). Exit codes:",
-    "  0 valid, signed by a key you named   1 invalid or fingerprint mismatch   2 usage/IO/ZIP error, or a complete export given as one file",
+    "  0 valid, signed by a key you named   1 invalid, signed by a key you did not name, or records that do not join",
+    "  2 usage/IO/ZIP error, or a complete export given as one file",
     "  3 not checked: a format this verifier does not read (DIFFERENT FORMAT), or no Ed25519 in this runtime (UNSUPPORTED)",
-    "  4 not verified: signed by a key that was not checked: name the fingerprint from your agreement with --expect-fingerprint",
+    "    A record whose change trail is sealed in the layout used before checker 2.7.0 is a different format: checker 2.6.0 reads it.",
+    "  4 not verified: signed by a key that was not checked (name the fingerprint from your agreement with --expect-fingerprint),",
+    "    or outside timestamps that could not be verified (below)",
     "With several files the exit code is the most serious of theirs: 1 first, then 3, then 2, then 4, then 0.",
     "The last line, OVERALL, says the same in words.",
     "",
-    "--json prints one JSON document. For one file it is that file's result; for a folder or several files, it lists every file with",
-    "its own result and exit code, the sequence when there is one, any complete export set aside, and the result and exit code for them all.",
+    "--json prints one JSON document. For one file it is that file's result, or the error when the file cannot be read; for a folder,",
+    "several files or a part of a complete export, it lists every file with its own result and exit code, the sequence when there is one,",
+    "any complete export set aside, and the result and exit code for them all.",
     "",
     "A checkpoint downloaded from the Checkpoints page (a file whose name ends in .json) is checked on its own: its signature over the records it seals",
     "(the Mandate ID, the first and last record's ids, how many there are, and their root) and its key. An export of the same period checks the records themselves.",
     "Given beside records, or found in a folder with them, it is still checked on its own, after them and apart from their sequence.",
     "",
-    "Outside timestamps: a checkpoint may carry a timestamp from an independent time-stamp authority (RFC 3161), which shows it existed",
+    "Outside timestamps: a checkpoint may carry a timestamp from an independent timestamp authority (RFC 3161), which shows it existed",
     "by that time. Each is checked offline against the roots this verifier ships (DigiCert Trusted Root G4). A checkpoint without one is",
     "named. In a record, a checkpoint without one before a checkpoint with one, or one stamped before an earlier checkpoint, is INVALID:",
     "Mandate stamps checkpoints in the order of their records, so either means a checkpoint was replaced after the fact. One this verifier",
@@ -3116,31 +3185,32 @@ async function main(argv) {
   let parts = 0;
   const partCodes = [];
   for (const packPath of recordPaths) {
-    const { code, result, kind } = emit(await verifyOne(packPath, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
+    const { code, result, kind, words } = emit(await verifyOne(packPath, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
     worst = worse(worst, code);
     parts++;
     partCodes.push(code);
-    outcomes.push({ path: packPath, code, inProgress: result?.inProgress === true, format: result?.format !== undefined });
+    outcomes.push({ path: packPath, code, inProgress: result?.inProgress === true, format: result?.format !== undefined, words });
     const pack = result && kind === "evidence" ? { name: packPath, result, trusted: code === 0 } : null;
     if (pack) streamedReach.push({ result: { identity: result.identity, inProgress: result.inProgress } });
     if (!streamed) {
       if (pack) verified.push(pack);
     } else if (!pack) {
-      streamedSequence ??= { status: "invalid", reason: "every part of a sequence must be a readable signed record" };
+      if (streamedSequence?.status !== "invalid") streamedSequence = { status: "invalid", reason: "every part of a sequence must be a readable signed record" };
     } else {
-      if (previous && !streamedSequence) {
+      if (previous && streamedSequence?.status !== "invalid") {
         const pair = checkPackSequence([previous, pack]);
-        if (pair.status !== "valid") streamedSequence = pair;
-        else {
+        if (pair.status === "valid") {
           streamedNotes.push(...(pair.notes ?? []));
           streamedErased.push(...(pair.erased ?? []));
+        } else if (pair.status === "invalid" || !streamedSequence) {
+          streamedSequence = pair;
         }
       }
       previous = pack;
     }
   }
-  if (parts > 1) {
-    const missing = partsMissing(recordPaths.map((p) => basename(p)));
+  const missing = partsMissing(recordPaths.map((p) => basename(p)));
+  if (parts > 1 || missing) {
     sequence = missing
       ? { status: "invalid", reason: missing }
       : streamed
@@ -3149,38 +3219,43 @@ async function main(argv) {
           ? checkPackSequence(verified)
           : { status: "invalid", reason: "every part of a sequence must be a readable signed record" };
     const joined = `${sequence.packs} parts join record to record, with no gap between their periods`;
-    // How the parts join says nothing of each part, so the line never says VALID while one failed its own check.
+    // How the parts join says nothing of each part, so the line never says VALID while one failed its own check, nor while
+    // one was not verified.
     const partFailed = sequence.status === "valid" && partCodes.includes(1);
+    const unverified = sequence.status === "valid" && !partFailed ? notVerifiedWords(outcomes.filter((o) => o.code === 4)) : null;
     if (sequence.status !== "valid") {
       sequenceWords = ["changed", "missing", "erased-first"].includes(sequence.kind) ? `the records disagree: ${sequence.detail}` : sequence.reason;
     }
-    if (!asJson) console.log(sequence.status !== "valid"
-      ? `SEQUENCE: INVALID (${sequenceWords})`
-      : partFailed
-        ? "SEQUENCE: INVALID (the parts join, but at least one part failed its own check above)"
-        : expectFingerprints.length === 0
-          ? `SEQUENCE: NOT VERIFIED (${joined}, but the key was not checked: name the fingerprint from your agreement with --expect-fingerprint)`
-          : `SEQUENCE: VALID${sequence.inProgress ? ", IN PROGRESS" : ""} (${joined})`);
+    if (!asJson) console.log(sequence.status === "unsupported"
+      ? `SEQUENCE: NOT CHECKED (${sequenceWords})`
+      : sequence.status !== "valid"
+        ? `SEQUENCE: INVALID (${sequenceWords})`
+        : partFailed
+          ? "SEQUENCE: INVALID (the parts join, but at least one part failed its own check above)"
+          : unverified
+            ? `SEQUENCE: NOT VERIFIED (${joined}, but ${unverified.path ? `${unverified.path} is not verified: ${unverified.words}` : "the key was not checked: name the fingerprint from your agreement with --expect-fingerprint"})`
+            : `SEQUENCE: VALID${sequence.inProgress ? ", IN PROGRESS" : ""} (${joined})`);
     if (!asJson && sequence.status === "valid" && !partFailed && sequence.inProgress) {
       console.log(`  in progress: their period had not ended when they were made; together they cover it up to ${localTime(sequence.recordedUntil)}`);
     }
     if (!asJson && sequence.status === "valid" && !partFailed) for (const note of sequence.notes ?? []) console.log(`  note: ${note}`);
-    if (sequence.status !== "valid") worst = worse(worst, 1);
+    if (sequence.status !== "valid") worst = worse(worst, sequence.status === "unsupported" ? 3 : 1);
   }
   for (const path of [...checkpointPaths, ...folderCheckpoints]) {
-    const { code, result } = emit(await verifyCheckpointOne(path, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
+    const { code, result, words } = emit(await verifyCheckpointOne(path, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
     worst = worse(worst, code);
-    outcomes.push({ path, code, checkpoint: true, format: result?.format !== undefined });
+    outcomes.push({ path, code, checkpoint: true, format: result?.format !== undefined, words });
   }
   // A reader who looks only at the end of a long run reads the result for every file there, in the exit code's word.
-  if (several && !asJson) {
+  const listed = several || sequence !== null;
+  if (listed && !asJson) {
     console.log("");
     console.log(overallLine(worst, outcomes, sequence, sequenceWords));
   }
-  if (asJson && several) {
+  if (asJson && listed) {
     console.log(JSON.stringify({ files, ...(sequence ? { sequence } : {}), ...(setAside.length ? { setAside } : {}), result: RESULT_WORDS[worst],
       exitCode: worst }, null, 2));
-  } else if (asJson && files[0] && !files[0].error) {
+  } else if (asJson && files[0]) {
     const { exitCode, ...one } = files[0];
     console.log(JSON.stringify(one, null, 2));
   }
@@ -3188,6 +3263,16 @@ async function main(argv) {
 }
 
 const RESULT_WORDS = { 0: "valid", 1: "invalid", 2: "not checked", 3: "not checked", 4: "not verified" };
+
+const KEY_NOT_CHECKED = "signed by a key that was not checked: name the fingerprint from your agreement with --expect-fingerprint";
+
+// The first file not verified for a reason of its own, such as its outside timestamps; when every one is not verified
+// only because no fingerprint was named, that run-wide reason alone. Null when none is not verified.
+function notVerifiedWords(unverified) {
+  if (unverified.length === 0) return null;
+  const own = unverified.find((o) => o.words !== KEY_NOT_CHECKED);
+  return own ? { path: own.path, words: own.words } : { path: null, words: KEY_NOT_CHECKED };
+}
 
 function overallLine(worst, outcomes, sequence, sequenceWords) {
   if (worst === 1) {
@@ -3200,14 +3285,17 @@ function overallLine(worst, outcomes, sequence, sequenceWords) {
   if (worst === 3) {
     const first = outcomes.find((o) => o.code === 3);
     return first.format
-      ? `OVERALL: NOT CHECKED (${first.path} is in a format this verifier does not read)`
+      ? `OVERALL: NOT CHECKED (${first.path} is in a format this checker does not read)`
       : "OVERALL: NOT CHECKED (this runtime lacks WebCrypto Ed25519; use Node 20 or newer)";
   }
   if (worst === 2) {
     const first = outcomes.find((o) => o.code === 2);
     return `OVERALL: NOT CHECKED (${first.path} ${first.words ?? "could not be read"})`;
   }
-  if (worst === 4) return "OVERALL: NOT VERIFIED (signed by a key that was not checked: name the fingerprint from your agreement with --expect-fingerprint)";
+  if (worst === 4) {
+    const unverified = notVerifiedWords(outcomes.filter((o) => o.code === 4));
+    return `OVERALL: NOT VERIFIED (${unverified.path ? `${unverified.path} is not verified: ${unverified.words}` : unverified.words})`;
+  }
   const records = outcomes.filter((o) => !o.checkpoint).length;
   const checkpoints = outcomes.length - records;
   const counted = [records ? `${records} record${records === 1 ? "" : "s"}` : "", checkpoints ? `${checkpoints} checkpoint${checkpoints === 1 ? "" : "s"}` : ""]
@@ -3405,16 +3493,17 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
         const decided = finalDecisionsLine(ch.finalDecisions);
         if (decided) console.log(`         ${decided.tag} ${decided.label}`);
       } else {
-        console.log(`Records: [FAIL] ${ch.reason}`);
+        console.log(`Records: ${ch.status === "unsupported" ? "[ ?? ]" : "[FAIL]"} ${ch.reason}`);
       }
     }
     console.log("");
   }
 
-  if (result.overall === "unsupported") {
+  // A record in an earlier layout had its signature and keys checked all the same, so a key not named still fails it.
+  if (result.overall === "unsupported" && !(result.sealedBefore && fingerprintMismatches.length > 0)) {
     if (!asJson) {
       console.log(result.format !== undefined
-        ? `RESULT: DIFFERENT FORMAT (${result.manifest.reason})`
+        ? `RESULT: DIFFERENT FORMAT (${result.formatReason ?? result.manifest.reason})`
         : "RESULT: UNSUPPORTED (this runtime lacks WebCrypto Ed25519; use Node 20 or newer)");
     }
     return { code: 3, result, kind, entry };
@@ -3424,15 +3513,16 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
     return { code: 1, result, kind, entry };
   }
   if (result.timestamps?.notVerified) {
-    if (!asJson) console.log(`RESULT: NOT VERIFIED (outside timestamps: ${result.timestamps.notVerified})`);
-    return { code: 4, result, kind, entry };
+    const words = `outside timestamps: ${result.timestamps.notVerified}`;
+    if (!asJson) console.log(`RESULT: NOT VERIFIED (${words})`);
+    return { code: 4, result, kind, entry, words };
   }
   if (expected.length === 0) {
     if (!asJson) {
       if (result.checkpointKeysDiffer) console.log("Some checkpoints are signed by a different key than the record, as after a key change: compare each fingerprint above with your agreement.");
-      console.log("RESULT: NOT VERIFIED (signed by a key that was not checked: name the fingerprint from your agreement with --expect-fingerprint)");
+      console.log(`RESULT: NOT VERIFIED (${KEY_NOT_CHECKED})`);
     }
-    return { code: 4, result, kind, entry };
+    return { code: 4, result, kind, entry, words: KEY_NOT_CHECKED };
   }
   if (!asJson) {
     console.log(result.inProgress ? `RESULT: VALID, IN PROGRESS (${progressWords(result, true)})` : "RESULT: VALID");
@@ -3506,12 +3596,13 @@ async function verifyCheckpointOne(path, expected, asJson, options = {}) {
     return { code: 1, result, kind: "checkpoint", entry };
   }
   if (result.timestampNotVerified) {
-    if (!asJson) console.log(`RESULT: NOT VERIFIED (checkpoint, --require-timestamps: ${result.timestampNotVerified})`);
-    return { code: 4, result, kind: "checkpoint", entry };
+    const words = `--require-timestamps: ${result.timestampNotVerified}`;
+    if (!asJson) console.log(`RESULT: NOT VERIFIED (checkpoint, ${words})`);
+    return { code: 4, result, kind: "checkpoint", entry, words };
   }
   if (expected.length === 0) {
-    if (!asJson) console.log("RESULT: NOT VERIFIED (checkpoint, signed by a key that was not checked: name the fingerprint from your agreement with --expect-fingerprint)");
-    return { code: 4, result, kind: "checkpoint", entry };
+    if (!asJson) console.log(`RESULT: NOT VERIFIED (checkpoint, ${KEY_NOT_CHECKED})`);
+    return { code: 4, result, kind: "checkpoint", entry, words: KEY_NOT_CHECKED };
   }
   if (!asJson) console.log("RESULT: VALID (checkpoint)");
   return { code: 0, result, kind: "checkpoint", entry };

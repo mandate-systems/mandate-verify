@@ -22,14 +22,27 @@ No packages are installed or downloaded at run time. The only imports are Node b
 
 ## Quick start with a sample record
 
-Three sample records of fictional firms, exported through the real product path, live in [`samples/`](samples/). They are signed with a key used only for them. Check one and name that key, so the trust step runs instead of being skipped:
+Three sample records of fictional firms, exported the same way a customer's record is, live in [`samples/`](samples/). They are signed with a key used only for them. Check one and name that key, so the trust step runs instead of being skipped:
 
 ```
 node mandate-verify.mjs samples/mandate-sample-record-accounting.zip \
   --expect-fingerprint 9a914bf1310855175c7d868ad434987075412f627b2e8c18e5634e0bfcba045f
 ```
 
-The same fingerprint is published at https://mandateco.ca/verify.html, which runs this file's checks in the browser. Every checkpoint in the samples carries an outside timestamp from DigiCert's public time-stamp service, which the script checks offline.
+The same fingerprint is published at https://mandateco.ca/verify.html, which runs this file's checks in the browser. Every checkpoint in the samples carries an outside timestamp from DigiCert's public timestamp service, which the script checks offline.
+
+## Terms used here
+
+- **Mandate** is the company and its product. A **mandate**, in lower case, is an approval that lets an AI agent use named tools for named purposes.
+- A **checkpoint** is a signed statement over a run of records: how many there are, the first and last record's ids, and the root of a hash tree over them.
+- **Sealed** means fixed by a hash that a signed checkpoint covers, directly or through a record in the chain, so it cannot change without a check failing.
+- The **change trail** is the list of changes made to an organization's policies, settings and approvals, each entry sealed into the records.
+- An **assessment** checks one AI system against a framework, a set of requirements, at one time. A **finding** is its result for one requirement: met, partially met, not met, not applicable or unable to determine.
+- An **artifact version** is one dated version of something the organization gives as evidence, such as a document, an approval, an attestation, a link or a remediation.
+- A **measure value** is one reading of a number Mandate tracks about an AI system, compared with a limit set for it.
+- A **case system** is the organization's own system for the cases an AI system helps with. A **final decision** is the decision a person recorded there, which the case system sends to Mandate.
+- An **access record** is the export Mandate makes to answer one person's request to see the records about them (a data subject request, DSR).
+- **OSCAL** is the Open Security Controls Assessment Language, a NIST format for assessment results. A record carries its assessments in that format as well.
 
 ## What VALID means
 
@@ -57,9 +70,9 @@ A record made before its period ended is valid and in progress: the result reads
 
 Give the script several files, or a folder (every `.zip` in it, in name order), and it checks each one and then checks them together: the parts of one long export, or an earlier and a later export. They must have one Mandate ID, be signed by one key or by keys you named, leave no gap between their periods, and each continue from the one before. No record or change-trail entry that one holds inside the time the other covers may be missing from the other or read differently there. Each export is held to its period up to a minute before it says it was made, or only to the span its records hold when it says it is partial, and what that leaves out is named, as is any decision erased between the two exports. A part made before its period ended covers it up to a minute before it was made, so the next part must start by then. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.
 
-A long period downloads as one archive of parts, a complete export. Unzip it and give the script the folder. The archive itself is not signed, so the script never checks it as a record: given alone, it says what the archive holds and exits 2; left in the folder beside its parts, it is set aside. Parts named `part-K-of-N.zip` must all be there: a missing part is named and the sequence fails.
+A long period downloads as one archive of parts, a complete export. Unzip it and give the script the folder. The archive itself is not signed, so the script never checks it as a record: given alone, it says what the archive holds and exits 2; left in the folder beside its parts, it is set aside. Parts named `part-K-of-N.zip` must all be there, even when one part is given alone: a missing part is named and the sequence fails.
 
-A check of several files ends with one line, `OVERALL:`, whose word matches the exit code.
+A check of several files, or of one part of several, ends with one line, `OVERALL:`, whose word matches the exit code. When nothing failed and a file is not verified for a reason of its own, such as the outside timestamps `--require-timestamps` asks for, the `SEQUENCE:` and `OVERALL:` lines give that reason.
 
 ## A checkpoint on its own
 
@@ -69,15 +82,16 @@ A checkpoint saved from Mandate's Checkpoints page is a `.json` file. The script
 
 ```
 0  valid, and every key is one you named with --expect-fingerprint
-1  invalid, or signed by a key you did not name
+1  invalid, signed by a key you did not name, or records that do not join or lack a part
 2  usage error, unreadable file, not a readable ZIP archive, or a complete export given as one file
-3  a different format than this script reads, or no WebCrypto Ed25519 in this runtime (use Node 20 or newer)
+3  a different format than this script reads, such as a record in the change-trail layout used before 2.7.0 (below),
+   or no WebCrypto Ed25519 in this runtime (use Node 20 or newer)
 4  not verified: signed by a key that was not checked (no fingerprint named), or outside timestamps the script could not check (below)
 ```
 
 With several files the exit code is the most serious of theirs: 1 first, then 3, then 2, then 4, then 0.
 
-`--json` prints one JSON document: for one file, that file's result; for a folder or several files, every file with its own result and exit code, the sequence when there is one, any complete export set aside, and the result and exit code for them all. `--version` prints the tool version and the three payload domain tags it reads. `--expect-fingerprint` takes 64 hex characters, plain or in pairs separated by colons or spaces, in either case; give it more than once after a key change.
+`--json` prints one JSON document: for one file, that file's result, or the error when the file cannot be read; for a folder, several files or one part of several, every file with its own result and exit code, the sequence when there is one, any complete export set aside, and the result and exit code for them all. `--version` prints the tool version and the three payload domain tags it reads. `--expect-fingerprint` takes 64 hex characters, plain or in pairs separated by colons or spaces, in either case; give it more than once after a key change.
 
 `--timestamp-root <file>` names a root certificate (PEM or DER) to trust for outside timestamps, beside the one the script ships (DigiCert Trusted Root G4); give it more than once for several. A timestamp the script cannot check, placed before one it can, makes the result NOT VERIFIED until its authority's root is named. `--require-timestamps` reports NOT VERIFIED unless every checkpoint carries a timestamp the script can check, stamped within a day of its last record; in a record, only checkpoints of its last two hours may have none yet.
 
@@ -92,11 +106,13 @@ Read the file; it is meant to be read top to bottom. In outline:
 5. The walk over the records and the readable files tied to them, as listed under What VALID means, then the order of the outside timestamps along the records.
 6. With several records, the comparison between them.
 
-Byte layouts, the manifest schemas and the trust model are in [docs/evidence-pack-format.md](docs/evidence-pack-format.md). The payload layouts are pinned by the cross-language test vectors in [`test/vectors/`](test/vectors/), the same vectors the product's own test suites assert; the signing seed in the vectors is all zeros and test-only. The timestamp vector holds a real token from DigiCert's public time-stamp service.
+Byte layouts, the manifest schemas and the trust model are in [docs/evidence-pack-format.md](docs/evidence-pack-format.md). The payload layouts are pinned by the cross-language test vectors in [`test/vectors/`](test/vectors/), the same vectors the product's own test suites assert; the signing seed in the vectors is all zeros and test-only. The timestamp vector holds a real token from DigiCert's public timestamp service.
 
 ## Records made with earlier versions
 
-A record exported before checker 2.7.0 seals its change trail in an earlier layout, which this version does not read, so this version reports it as INVALID though it has not changed. Check such a record with the checker released with it: 2.6.0 (tag `v2.6.0`) reads it. [CHANGELOG.md](CHANGELOG.md) lists what each version reads.
+A record exported before checker 2.7.0 (2026-10-25) seals its change-trail entries in an earlier layout, which this version does not read. When every sealed entry is in that layout and nothing in the record comes from a later version, this version answers DIFFERENT FORMAT and exits 3, naming checker 2.6.0 (tag `v2.6.0`), which reads it. It still checks the signature, the files, the checkpoints and the records, so a record changed after it was signed, or signed by a key you did not name, is INVALID.
+
+A record of that time with no sealed change-trail entry gives this version nothing to recognise, so it is reported INVALID: check it with the checker released with it. [CHANGELOG.md](CHANGELOG.md) lists what each version reads.
 
 ## Test suite
 
@@ -107,7 +123,7 @@ MIRROR=1 node test/check.mjs    # also byte-compare this repository against the 
 
 The tamper matrix covers content flip, injected file, metadata flips on the completeness flags, missing file, duplicate entry, entry-count bomb, declared-size bomb, non-ZIP input, fingerprint spoofing in the manifest and in a checkpoint, unsigned manifest members, malformed manifest entries, a key that is not 32 bytes, a signed length that is not the file's, and a legitimate high-compression pack that must still pass. The record walk covers edited, swapped and foreign records, a register row, person, change-trail entry, erasure, policy text, sealed list, imported figure or printed report that no longer matches, a sealed assessment, review, artifact version, measure value or impact assessment version rewritten or left out, a finding's review decision or an assessment's sign-off that its sealed reviews do not give, a final decision changed after sealing, and a records file that claims to be partial under a manifest that says complete. The comparison covers a record left out of a re-signed later export, in either order, decisions erased between exports, a key change, a change-trail entry that no longer names who acted or was sealed between the exports, a part in progress, and a Mandate ID written in capitals. The timestamp checks run a real DigiCert token, every one-byte change to it, and a test authority built by the suite that signs tokens with each flaw the script refuses. The suite also runs the script itself the way an auditor would and checks its exit codes and result lines, for records, checkpoint files, folders and complete exports. The same file matrix runs over a synthetic access record, with its manifest rules and a format the script does not read.
 
-`node test/check.mjs --write-joined-pair <dir>`, `--write-final-decisions <dir>` and `--write-sign-off <dir>` write synthetic records signed with the test key into `<dir>` and stop, so an earlier version of the script, or verify.html, can be run on the same files.
+`node test/check.mjs --write-joined-pair <dir>`, `--write-final-decisions <dir>`, `--write-sign-off <dir>` and `--write-earlier-layout <dir>` write synthetic records signed with the test key into `<dir>` and stop, so an earlier version of the script, or verify.html, can be run on the same files.
 
 ## Provenance
 
@@ -115,7 +131,7 @@ The canonical artifact is the file served at `https://mandateco.ca/downloads/man
 
 ## Relationship to the product repository
 
-Verifier changes originate in Mandate's product repository, where the payload builders are tested against the implementation that produces real records, and flow here with the site deploy. Issues and documentation fixes are welcome in this repository; for changes to verification logic, open an issue first so the change lands through that path rather than diverging the mirror.
+Verifier changes originate in Mandate's product repository, where the payload builders are tested against the implementation that produces real records, and are published here and on the site together. Issues and documentation fixes are welcome in this repository; for changes to verification logic, open an issue first so the change lands through that path rather than diverging the mirror.
 
 ## Security
 

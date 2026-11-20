@@ -1,8 +1,8 @@
 # Mandate evidence pack: format specification
 
-This document specifies what is needed to check a Mandate evidence pack (the site and the CLI call it a signed record) independently: the container, the manifest, the three signed payloads, the checkpoints and their outside timestamps, the records inside the pack, what ties the readable files to those records, the rules for comparing several packs, and the access record. It is the public companion to `mandate-verify.mjs` 2.20.0, which implements exactly what is written here.
+This document specifies what is needed to check a Mandate evidence pack (the site and the CLI call it a signed record) independently: the container, the manifest, the three signed payloads, the checkpoints and their outside timestamps, the records inside the pack, what ties the readable files to those records, the rules for comparing several packs, and the access record. It is the public companion to `mandate-verify.mjs` 2.21.0, which implements exactly what is written here.
 
-Version note: the manifest signature format is `v3`, the checkpoint signature format is `v1`, the access-record signature format is `v4`, the manifest schema version is `3`, checkpoint files are formats `1` and `2`, records use layouts `1` to `9`, and change-trail entries are sealed under layouts `v2` to `v5`. These numbers move independently. `node mandate-verify.mjs --version` prints the tool version and the three domain tags. A record exported before checker 2.7.0 seals its change trail under layout `v1`, which this version does not read (section 6.3).
+Version note: the manifest signature format is `v3`, the checkpoint signature format is `v1`, the access-record signature format is `v4`, the manifest schema version is `3`, checkpoint files are formats `1` and `2`, records use layouts `1` to `9`, and change-trail entries are sealed under layouts `v2` to `v5`. These numbers move independently. `node mandate-verify.mjs --version` prints the tool version and the three domain tags. A record exported before checker 2.7.0 (2026-10-25) seals its change trail under layout `v1`, which this version answers as a different format (section 6.3).
 
 Conventions: integers are big-endian (ZIP structures excepted, which are little-endian as ZIP defines them). A UUID is 16 bytes in RFC 4122 wire order, which is the 32 hex digits of its text form, in order; two UUIDs are the same when their 16 bytes are. Hex is accepted in either case and compared case-insensitively, unless a rule below says lowercase. `||` is concatenation. Absent means a member that is missing or `null`.
 
@@ -20,7 +20,7 @@ An evidence pack is a ZIP archive. The reader accepts one only if every common u
 | Compression methods | stored (0) and deflate (8) only |
 | Duplicate file names | rejected |
 | Archive comment, entry comments | rejected |
-| CRC-32 | checked on every file (since 2.3.1) |
+| CRC-32 | checked on every file (since 2.5.0) |
 
 The reader also requires:
 
@@ -93,13 +93,13 @@ The manifest's content list is authoritative, and the set of files in the archiv
 - `tenantId` is the Mandate ID: it names whose records the pack holds. The CLI prints it as `Mandate ID`.
 - The three timestamps are required and must match `YYYY-MM-DDTHH:MM:SS`, an optional fraction of 1 to 9 digits, then `Z` or `+HH:MM` / `-HH:MM`.
 - `truncated` is true when the register, or `chain/links.json`, holds only part of the window; `checkpointsTruncated` when the checkpoint files were capped; `mutationsTruncated` when the change trail was. All three flags are inside the signed payload, so a capped pack cannot be re-labelled complete or the reverse.
-- `contents` lists every file except `manifest.json`. Each `sha256Hex` is compared with the file, and since 2.5.1 each `byteLength`, which the signature binds, must equal the file's length.
+- `contents` lists every file except `manifest.json`. Each `sha256Hex` is compared with the file, and since 2.6.0 each `byteLength`, which the signature binds, must equal the file's length.
 - `publicKeyBase64` must decode to 32 bytes. A key of any other length makes the manifest INVALID; it is not reported as a runtime without Ed25519.
 
 Rules on the manifest as a whole, applied once the signature verifies (the first that fails is reported):
 
 - **No members outside the signature.** The manifest may carry only the 13 members above. The payload (section 3) binds the first nine; `signatureHex` and `publicKeyBase64` are what verifies it; `publicKeyFingerprint` and `checkpointIds` are checked against signed data below. Any other member makes the manifest INVALID, because nothing binds it.
-- **The declared fingerprint must match the key.** When `publicKeyFingerprint` is present it must equal the SHA-256 of the decoded `publicKeyBase64`. Since 2.4.0 a mismatch is refused, not ignored. The verifier reports the fingerprint it computed, never the declared one.
+- **The declared fingerprint must match the key.** When `publicKeyFingerprint` is present it must equal the SHA-256 of the decoded `publicKeyBase64`. Since 2.5.0 a mismatch is refused, not ignored. The verifier reports the fingerprint it computed, never the declared one.
 - **Checkpoint ids.** When `checkpointIds` is an array, it must list exactly the ids of the `checkpoints/<uuid>.json` files in the archive, each once, in any order.
 
 **In progress.** A pack is in progress when `generatedAt` is before `windowTo`, compared as the integer Unix milliseconds the signature binds (since 2.10.0). It holds what was recorded up to when it was made, and has not begun when `generatedAt` is before `windowFrom` as well. An in-progress pack is valid; the CLI prints `RESULT: VALID, IN PROGRESS` and says what it holds, and `--json` reports `"inProgress": true` and `"notBegun"`. Its report must say so (section 6.9).
@@ -188,7 +188,7 @@ The CLI prints `Kind: checkpoint`, what it seals (the count and the first and la
 
 ### 4.3 Outside timestamps
 
-`timestampTokenBase64` is the base64 of an RFC 3161 time-stamp token: a CMS signed-data structure, in DER, holding a TSTInfo. It shows that the checkpoint existed by the time the token states.
+`timestampTokenBase64` is the base64 of an RFC 3161 timestamp token: a CMS signed-data structure, in DER, holding a TSTInfo. It shows that the checkpoint existed by the time the token states.
 
 **What the token is over.** The imprint is the 215 bytes made of the checkpoint's 119-byte signed payload (section 4.1), then its 64-byte signature, then its 32-byte public key. The token's message imprint must be the SHA-256 of those bytes.
 
@@ -419,6 +419,8 @@ record      = F(UTF-8 kind) || F(id as UUID) || F(sha256 as 32 raw bytes)
 - Ticks are 100-nanosecond units since 1970-01-01T00:00:00Z: the Unix milliseconds of the time without its fraction, times 10,000, plus the first seven fraction digits as an integer (padded on the right with zeros; further digits dropped). The time must match `YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or `+HH:MM` / `-HH:MM`.
 - `action` and `actorType` must be strings. An entry that names `actorDisplay` must carry `actorSalt` (hex).
 
+**The layout before 2.7.0.** A record exported before checker 2.7.0 (2026-10-25) seals each entry under the domain `mandate.change-trail-entry.v1`: the fields above from `id` to `transition.version`, and nothing after them. A list's change in such a record may name its entries. The verifier takes a record to be in that layout when every entry whose change record is in the pack reproduces its seal under `v1` and none under a later layout, no entry carries a mandate's, an assessment's or a record's facts, `report/summary.json` has no `imported` section (section 6.10) and every checkpoint is format 1. Such a record is not read against `v2` to `v5`, an entry not sealed yet may name a list's entries, and its report is held neither to section 6.10 nor, when it says nothing of being in progress, to section 6.9. Every other check still runs. Only when all of them pass does the record answer DIFFERENT FORMAT (exit 3), naming checker 2.6.0, which reads it; a failure there, or a key not named, is INVALID. Any other mix of layouts fails as above, and a record with no sealed entry is read as any other.
+
 The record kinds the verifier reads are `finding_review`, `artifact`, `measure_value` and `impact_assessment` (section 6.11), `assessment_sign_off` (section 6.12) and `final_decisions` (section 6.13). An entry of another kind is sealed and checked like any other, and its document is not read.
 
 ### 6.4 Erasures
@@ -561,7 +563,7 @@ What the readable row must say. Values are compared as equal JSON values, absent
 | impact assessments | supplier | `suppliedBy`, `suppliedRoles` | the same |
 | impact assessments | time | `createdAt` | `createdAt` |
 
-Every file also compares the row's `id` with the document's. A remediation linked to the breach it answers names the measure value in breach: `{ "target": "breach", "id": "<uuid>" }` in the document, `measureValueId` in the row (since 2.20.0). A pack whose assessment files were cut is reported partial, naming them.
+Every file also compares the row's `id` with the document's. A remediation linked to the problem it answers, a measure value that went past its limit, names that value: `{ "target": "breach", "id": "<uuid>" }` in the document, `measureValueId` in the row (since 2.20.0). A pack whose assessment files were cut is reported partial, naming them.
 
 ### 6.12 Review decisions and sign-off
 
@@ -620,7 +622,7 @@ The salt lets one decision be shown and checked without disclosing the others. A
 
 ## 7. Several packs
 
-The CLI takes several packs, or a folder. A folder stands for the files in it, in name order: each `.zip` is a pack, each `.json` a checkpoint checked on its own (section 4.2), and other files are ignored. Each pack is first checked alone. Every input must be a readable signed record, not an access record, or the sequence fails.
+The CLI takes several packs, or a folder. A folder stands for the files in it, in name order: each `.zip` is a pack, each `.json` a checkpoint checked on its own (section 4.2), and other files are ignored. Each pack is first checked alone. Every input must be a readable signed record, not an access record, or the sequence fails. A pack in a format this verifier does not read (section 6.3 names one) is not compared: every pair without it still is, and the sequence reads NOT CHECKED (exit 3) unless one of them fails.
 
 Packs named one by one are put in order of `windowFrom` and each neighbouring pair is compared. When any input is a folder, the inputs are taken in the order given (a folder's files in name order) and compared one neighbour at a time, so a long export needs no more memory than two packs. For each pair, earlier window first:
 
@@ -644,9 +646,9 @@ The records agree when, in both directions:
 
 The sequence is in progress when the latest point its parts cover (a part in progress: a minute before its `generatedAt`; any other: its `windowTo`) is before the latest `windowTo`.
 
-**Complete exports.** A long period downloads as one archive of parts, a complete export: an archive that holds records named `part-K-of-N.zip` and no `manifest.json`. The CLI knows one by those names, read from the archive's central directory (ZIP64 end records included), whatever the archive is named. The archive is not signed, so it is never checked as a record. Given alone, the CLI says what it holds and any part it lacks, and exits 2; given beside other records, as unzipping it in place leaves it, it is set aside with a note. When every pack given is named `part-K-of-N.zip` with the same `N`, every part from 1 to `N` must be there once: a part missing or given twice fails the sequence and is named.
+**Complete exports.** A long period downloads as one archive of parts, a complete export: an archive that holds records named `part-K-of-N.zip` and no `manifest.json`. The CLI knows one by those names, read from the archive's central directory (ZIP64 end records included), whatever the archive is named. The archive is not signed, so it is never checked as a record. Given alone, the CLI says what it holds and any part it lacks, and exits 2; given beside other records, as unzipping it in place leaves it, it is set aside with a note. When every pack given is named `part-K-of-N.zip` with the same `N`, every part from 1 to `N` must be there once: a part missing or given twice fails the sequence and is named. This holds for one part given alone too, when its `N` is above 1.
 
-The CLI prints `SEQUENCE: VALID` (with `, IN PROGRESS` and how far the parts cover when the sequence is in progress), `SEQUENCE: NOT VERIFIED` (no fingerprint named) or `SEQUENCE: INVALID` with the first failure, then the notes. It never prints `SEQUENCE: VALID` while a part failed its own check. A failed sequence exits 1. A check of several files ends with `OVERALL:` and a word that matches the exit code: `VALID`, `INVALID`, `NOT CHECKED` or `NOT VERIFIED`. In `--json` a failed pair carries a `kind`: `mandate-id`, `key`, `gap`, `unreadable`, `missing`, `erased-first`, `changed` or `continuity`.
+The CLI prints `SEQUENCE: VALID` (with `, IN PROGRESS` and how far the parts cover when the sequence is in progress), `SEQUENCE: NOT VERIFIED` (no fingerprint named, or a part not verified for a reason of its own, which it names), `SEQUENCE: NOT CHECKED` (a part in a format this verifier does not read) or `SEQUENCE: INVALID` with the first failure, then the notes. It never prints `SEQUENCE: VALID` while a part failed its own check or was not verified. A failed sequence exits 1. A check of several files, or of one part of several, ends with `OVERALL:` and a word that matches the exit code: `VALID`, `INVALID`, `NOT CHECKED` or `NOT VERIFIED`, naming the first file that set it, or giving the sequence's reason when only the sequence failed. In `--json` a failed pair carries a `kind`: `mandate-id`, `key`, `gap`, `unreadable`, `missing`, `erased-first`, `changed` or `continuity`; a sequence not checked carries `format`.
 
 ## 8. Access record (`mandate.dsr.access-manifest-sig.v4`)
 
@@ -712,10 +714,10 @@ Timestamps, sorting and u32 ranges follow section 3; `opaqueBytes` must be a non
 | 0 | valid, signed by keys you named |
 | 1 | invalid, signed by a key you did not name, or a sequence that fails |
 | 2 | usage, file or ZIP error, or a complete export given as one file |
-| 3 | no Ed25519 support in this runtime, or a pack or checkpoint of a different format |
+| 3 | no Ed25519 support in this runtime, or a pack or checkpoint of a different format, such as a pack in the change-trail layout before 2.7.0 (section 6.3) |
 | 4 | not verified: no fingerprint was named, or outside timestamps the verifier could not check (section 4.4) |
 
-Given several files, the CLI exits with the most serious code, ranked 1, 3, 2, 4, 0 from most to least serious (since 2.10.0). `--json` prints one JSON document instead of text, with the same exit codes: for one file named directly, that file's result; for a folder or several files, `{ "files": [...], "sequence": ..., "setAside": [...], "result": "<word>", "exitCode": <n> }`, each file with its own result and `exitCode`, `sequence` when there is one and `setAside` when a complete export was set aside.
+Given several files, the CLI exits with the most serious code, ranked 1, 3, 2, 4, 0 from most to least serious (since 2.10.0). `--json` prints one JSON document instead of text, with the same exit codes: for one file named directly, that file's result, or `{ "pack": <file>, "error": <message> }` when it cannot be read; for a folder, several files or one part of several, `{ "files": [...], "sequence": ..., "setAside": [...], "result": "<word>", "exitCode": <n> }`, each file with its own result and `exitCode`, `sequence` when there is one and `setAside` when a complete export was set aside.
 
 ## 10. Verification procedure
 
@@ -732,7 +734,7 @@ Given several files, the CLI exits with the most serious code, ranked 1, 3, 2, 4
 11. Compute the fingerprint of the manifest key and of every checkpoint key, and compare each with the fingerprints you trust (section 9).
 12. Given several packs, apply section 7.
 
-A pack is VALID only if every step passes. Reference behaviour for every failure mode, including the tamper matrix, is pinned by `test/check.mjs` and the vectors under `test/vectors/`.
+A pack is VALID only if every step passes. A pack in the change-trail layout before 2.7.0 that passes every step it is held to is a different format (section 6.3). Reference behaviour for every failure mode, including the tamper matrix, is pinned by `test/check.mjs` and the vectors under `test/vectors/`.
 
 ## 11. Golden vectors
 
@@ -747,4 +749,4 @@ A pack is VALID only if every step passes. Reference behaviour for every failure
 
 Each payload vector holds the input fields, the expected payload bytes (`payloadHex`), a signature, the public key and its fingerprint, generated from an all-zeros test-only seed (`seedBase64`). The same vector files are asserted byte for byte by the producing implementation's own tests, which is what makes this specification enforceable rather than descriptive. The signed-record vector carries `manifestVersion` 2: it pins the byte layout, which does not depend on that value, while a real manifest of version 2 is still reported as a different format.
 
-The timestamp vector holds the checkpoint of `checkpoint-signed-payload-v1.vector.json` as the imprinted bytes (`imprintedHex`, 215 bytes) and their SHA-256, and the RFC 3161 answer DigiCert's public time-stamp service gave to a request for them (`responseBase64`), with the token inside it (`tokenBase64`), its nonce, its time and its authority. The token verifies against those bytes and DigiCert Trusted Root G4.
+The timestamp vector holds the checkpoint of `checkpoint-signed-payload-v1.vector.json` as the imprinted bytes (`imprintedHex`, 215 bytes) and their SHA-256, and the RFC 3161 answer DigiCert's public timestamp service gave to a request for them (`responseBase64`), with the token inside it (`tokenBase64`), its nonce, its time and its authority. The token verifies against those bytes and DigiCert Trusted Root G4.
