@@ -1,5 +1,113 @@
 # Changelog
 
+## 2.20.0
+
+The first release here since 2.6.0. Versions 2.7.0 to 2.19.0 were not released in this repository; each has its own entry below, and this release carries all of them.
+
+Records made before 2.7.0
+- A genuine record exported before checker 2.7.0 does not pass 2.7.0 or later, though it has not changed. Its change-trail entries are sealed under `mandate.change-trail-entry.v1`, which 2.7.0 and later do not read, and its `report/summary.json` has no section on other AI tools, which 2.8.0 and later require. The checker reports such a record as INVALID, naming the first change-trail entry it cannot reproduce. Check it with the checker released with it: 2.6.0 (tag `v2.6.0`) reads it.
+- The reverse holds too: 2.6.0 reports a current record as INVALID. Check a current record with this version.
+
+Fixed
+- A remediation can be linked to the breach it answers. In the artifact version's sealed record the link is `{ "target": "breach", "id": "<measure value id>" }`; in the readable row of `assessments/artifacts.json` it names the same value as `measureValueId`. Another value, or none, fails as a changed link. 2.19.0 read such a row's link as naming nothing and failed the pack.
+
+Repository
+- `test/vectors/checkpoint-timestamp-v1.vector.json` is new: a real RFC 3161 token from DigiCert's public timestamp service over the checkpoint of `checkpoint-signed-payload-v1.vector.json`.
+- `test/check.mjs` carries every case added from 2.7.0 to 2.20.0. Three options write synthetic records signed with the test key (`--write-joined-pair`, `--write-final-decisions`, `--write-sign-off`), so an earlier checker can be run on the same files.
+- The three sample records were exported again. Each carries an assessment, a review of one of its findings and an artifact version, and every checkpoint carries an outside timestamp. Same sample signing key; the published fingerprint is unchanged.
+- README, SECURITY.md and `docs/evidence-pack-format.md` updated for everything since 2.6.0.
+
+## 2.19.0
+
+Stricter
+- A finding's review decision in `assessments/findings.json` (`reviewState`, `reviewedResult`, `reviewedConfidence`, `reviewedAt`, `reviewedBy`) must be the one its latest review in `assessments/reviews.json` gives, or empty when no review decides it. This is checked while the reviews file is whole.
+- An assessment shows as signed off exactly when every finding has a decision, at the time and by the person of the last decision. Its sign-off is a change-trail entry that records the assessment and the SHA-256 of its document; it must name the document the pack carries, there may be only one, and a pack whose change trail is whole fails when it shows a sign-off the trail does not carry.
+- 2.18.0 passed a pack whose findings showed a review decision or a sign-off their sealed reviews do not give.
+
+## 2.18.0
+
+Outside timestamps
+- A checkpoint may carry an RFC 3161 timestamp from an independent time-stamp authority, which shows the checkpoint existed by that time. Checkpoint format 2 adds `timestampTokenBase64`: the token, over the checkpoint's signed payload, then its signature, then its public key, or `null` while none has been obtained. Format 1 checkpoints are read as before.
+- Each token is checked offline: SHA-256 over those bytes; signed by a certificate whose only use is timestamping; a chain to a root the checker ships (DigiCert Trusted Root G4) or one you name with `--timestamp-root`; every certificate valid at the stamped time; the authority's stated accuracy within a minute. A token that fails makes its checkpoint INVALID. A token whose chain leads to no root the checker holds is reported as one it cannot check, never as valid or invalid.
+- In a signed record, a checkpoint without a token before a checkpoint with one, or a checkpoint stamped more than five minutes before a checkpoint that seals earlier records, makes the record INVALID: Mandate stamps checkpoints in the order of their records, so either means a checkpoint was replaced, or its token removed, after the fact. A token the checker cannot check before one it can makes the result NOT VERIFIED (exit 4) until its authority's root is named.
+- The output names each checkpoint's stamp and authority, the checkpoints without one, how far the records are shown sealed by an outside time, and any token more than a day after its records.
+- `--timestamp-root <file>` names a root certificate (PEM or DER) to trust as well. `--require-timestamps` reports NOT VERIFIED (exit 4) unless every checkpoint carries a token the checker can check, stamped within a day of its last record; in a record, only checkpoints of its last two hours may have none yet.
+- A checkpoint file of a format other than 1 or 2 is a different format (exit 3).
+
+## 2.17.0
+
+Sealed documents in the assessment files
+- `assessments/findings.json`, `reviews.json`, `artifacts.json`, `measure-values.json` and `impact-assessments.json` carry each document as the exact text Mandate hashed. The checker recomputes each one: it must equal the SHA-256 beside it and the SHA-256 its change-trail entry carries, and the readable row beside it must say what the document says.
+- A file not cut at its size limit must hold every document the change trail seals in its period, or name it as deleted with its AI system. A review must name the assessment document the pack carries.
+- A document whose change-trail entry is not sealed in the export is counted as not checked. A file of a later version is not compared, and the output says why.
+- An export whose assessment files were cut at their size limit is reported as partial and names them.
+- A record exported before these files verifies as before.
+
+## 2.16.0
+
+Final decisions
+- `assessments/final-decisions.json` lists the final decisions a system's case system recorded in Mandate, batch by batch. Each batch's record is the exact text Mandate hashed, and its SHA-256 is carried by a change-trail entry sealed like any other.
+- Each decision is a document and a salt, so one decision can be shown and checked without disclosing the others. The SHA-256 of the salt and the document must be a digest the batch's record lists, and every listed digest must be carried once. An erased decision keeps only its digest and is counted as erased.
+- A decision or batch record that names another Mandate ID, batch or AI system fails. A batch whose change-trail entry is not sealed in the export is counted as not checked, never as a pass. A file of a later version is not compared.
+- The output has one line for the file. A record without it verifies as before.
+
+## 2.15.0
+
+Imported activity
+- A version 2 `imports/<feed>.json` lists Mandate's own notes on reading a row (`notes`) apart from the rules that fired on it (`ruleHits`), and the report counts the rows Mandate could not read in full. The checker recomputes that count. A row that lists a note among the rules that fired, or a rule among the notes, fails. A version 1 file is read as before; a later version is not compared, and the output says why.
+
+Complete exports
+- A complete export, the single archive Mandate downloads for a long period, is known by what it holds, whatever its name: records named `part-K-of-N.zip` and no `manifest.json`. It is not signed, so it is never checked as a record. Given alone, the script says what it holds, names any part it lacks, and exits 2. In a folder beside its unzipped parts, it is set aside with a note. 2.14.0 refused only a file whose name ended in `-packs.zip`.
+- Records named as the parts of one complete export must all be there: a part missing, or given twice, fails the sequence and is named.
+
+Command line
+- A check of several files ends with one line, `OVERALL:`, whose word always matches the exit code. `SEQUENCE:` never says VALID while a part failed its own check.
+- `--json` for several files adds `result` (the overall word) and `setAside`.
+
+## 2.14.0
+
+- A record chained as a test-set prompt (outcome `test`) links and verifies like any other, and is counted as a test prompt, not as a decision.
+
+## 2.13.0
+
+- A change-trail entry that records a governance record, such as the review of a finding or a version of an artifact, carries `record` (its kind, its id and the SHA-256 of its document) and is sealed under `mandate.change-trail-entry.v5`. Its facts rewritten or removed after sealing fail. An entry, sealed yet or not, that carries a field the seal does not cover is refused, and a sealed entry that carries the facts of more than one kind fails.
+
+## 2.12.0
+
+- A change-trail entry that records a concluded assessment carries `assessment` (its id and the SHA-256 of its document) and is sealed under `mandate.change-trail-entry.v4`, with the same rules.
+
+## 2.11.0
+
+- A change-trail entry that records what a mandate approves or ends carries `mandate` (its code, its tools, its purposes, its dates, and on an end what the agent does next and the mandate that took it over) and is sealed under `mandate.change-trail-entry.v3`, with the same rules.
+
+## 2.10.0
+
+In progress
+- A record made before its period ended (its signed `generatedAt` before its signed `windowTo`) is in progress. It is valid; the result reads `VALID, IN PROGRESS` and says it holds what was recorded up to when it was made, or nothing of its period when it was made before the period began. Its `report/summary.json` must say so, and must not say so when the record was made after its period ended. An access record whose range ends after it was made is in progress too.
+- In a sequence, a part in progress covers its period up to a minute before it was made, so the next part must start by then or the time between is in neither. A sequence whose parts hold less than their period reads `SEQUENCE: VALID, IN PROGRESS` and says how far they cover.
+
+Checkpoint files
+- A checkpoint downloaded from Mandate's Checkpoints page, a file whose name ends in `.json`, is checked on its own: its members, its signature, its declared fingerprint and its key. Its times are not signed, and the output says so. Given beside records, or found in a folder of them, it is checked after them and apart from their sequence. A checkpoint renamed `.zip` is not read as a record.
+
+Command line
+- The output and messages say `Mandate ID` where they said `workspace`. In `--json`, a sequence of two Mandate IDs fails with kind `mandate-id`.
+- With several files, the exit code is the most serious of them: 1 first, then 3, then 2, then 4, then 0. Before, a different format (3) or an unreadable file (2) outranked a failed check.
+- `--json` prints one JSON document. For a folder or several files it lists every file with its own result and exit code, the sequence when there is one, and the exit code for them all.
+- Without `--expect-fingerprint`, nothing printed calls the record unchanged: the result reads `NOT VERIFIED (signed by a key that was not checked: ...)`.
+
+## 2.9.0
+
+- Two exports: a change-trail entry that a later export lacks because its change record was erased with the records it belongs to is not a failure; the erased record is named. An entry not yet sealed when the earlier export was made, and absent from the later one, is named in a note and not compared, unless the later export still carries its change record.
+
+## 2.8.0
+
+- `report/summary.json` must say what the organization's other AI tools reported in their own logs, and its figures must be the ones the pack's `imports/<feed>.json` files give: the feeds, the rows, the rows a rule fired on, and the earliest and latest times the vendor reported. The `imports` block of `summary/decision-mix.json` must say the same. A record exported before 2.8.0 has no such section and fails this check.
+
+## 2.7.0
+
+- A change-trail entry's seal covers what a policy version changed (`transition.changes`), under `mandate.change-trail-entry.v2`. A change to a list of names says how many names were added and removed, never which. An entry that names a list's entries is refused whether or not it is sealed yet, as is a change with a field the seal does not cover.
+- A record exported before 2.7.0 seals its entries under v1, which this version does not read, so it fails. See the 2.20.0 entry.
+
 ## 2.6.0 (2026-10-20)
 
 Edge cases found while the format specification was written. A genuine record that passed 2.5.0 passes 2.6.0.
