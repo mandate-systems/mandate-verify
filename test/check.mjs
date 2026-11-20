@@ -83,6 +83,12 @@
  *               rewritten to name no one fails beside the earlier export, in either order, and so does a copy whose own
  *               seal names no one, or an untied copy that does not match the other export's sealed record; one export
  *               whose records seal an entry twice fails alone, and so do two that seal it by different records.
+ *               2.23.0: an export placed between two others no longer keeps them from being compared: two that are not
+ *               neighbours but whose periods or records overlap, or that hold one record or decision, are compared record
+ *               by record, with files named one by one and in a folder (read again a pair at a time), and a change-trail entry
+ *               held by two exports far apart is held to one copy and one seal; three exports that joined under 2.22.0 with
+ *               one entry named in the first and not in the last, or missing from the last, or a decision rewritten in the
+ *               last, fail, and a genuine three and consecutive parts still pass.
  *   4. FINAL DECISIONS (2.16.0) - each batch's record hashes to the record its change-trail entry seals, that entry
  *               ties to its change record like any other, and each decision's salted digest is one its batch lists,
  *               every listed digest carried once; a decision's document, salt or digest changed, one left out or
@@ -815,6 +821,8 @@ async function buildSyntheticPack(tweak = {}) {
   // 2.22.0: a records file cut so it starts after the first change record, as one capped at its size or at the register's
   // rows starts at a later sealed window; its register then holds only the decisions it ties.
   if (tweak.partialFromR3) links = links.slice(3);
+  // 2.23.0: a records file that holds no record, as one cut before its first does.
+  if (tweak.noLinks) links = [];
   const sealedCount = tweak.dropLast ? 5 : sealed.length;
   const sealedRoot = tweak.dropLast ? await merkleRootNode(sealed.slice(0, 5)) : root;
   const cpTenant = tweak.otherWorkspaceCheckpoint ? SYN_OTHER_WORKSPACE : tenantId;
@@ -861,6 +869,8 @@ async function buildSyntheticPack(tweak = {}) {
   ];
   if (tweak.dropLast || tweak.eraseR4 || tweak.testPrompt) decisions.pop();
   if (tweak.partialFromR3) decisions.shift();
+  // 2.23.0: the register's decision rows rewritten, as a database edit would reach an honest export.
+  if (tweak.editDecisions) decisions.splice(0, decisions.length, ...tweak.editDecisions(decisions));
   if (tweak.trailEdit) changes[0] = { ...changes[0], actorDisplay: "someone.else@workspace.example", mutationReason: "Approved by phone." };
   if (tweak.listCount || tweak.listNames || tweak.listExtra) {
     const [list, ...rest] = changes[1].transition.changes;
@@ -877,6 +887,8 @@ async function buildSyntheticPack(tweak = {}) {
     changes[0] = { ...rest, actorType: "mandate_support" };
   }
   if (tweak.trailDrop || tweak.eraseC2) changes.pop();
+  // 2.23.0: the first entry left out of the trail and the register after it was sealed.
+  if (tweak.dropFirstEntry) changes.shift();
   // 2.11.0: a mandate entry edited after sealing: a tool added, its facts removed, or a fact no seal covers.
   if (tweak.mandateToolAdded) changes[0].mandate.tools.push({ server: "erp", tool: "pay_invoice", includesLaterTools: false, awaitingFirstList: false });
   if (tweak.mandateTickFlipped) changes[0].mandate.tools[2].awaitingFirstList = false;
@@ -2195,10 +2207,52 @@ for (const [label, tweak, expect] of [
     ok("2.22.0: script, a later export that dropped who acted on an entry the earlier one seals -> exit 1, SEQUENCE INVALID naming the entry and the export",
       droppedRun.code === 1 && /^SEQUENCE: INVALID \(the records disagree: change-trail entry dddddddd-0000-4000-8000-000000000001 \(held_decision\.denied\), listed in mutations\/policy-trail\.json, names who acted in .*a\.zip but not in .*dropped-later\.zip; .*a\.zip carries the entry's sealed record, and .*a\.zip's copy of the entry matches it\)$/m.test(droppedRun.out)
         && /^OVERALL: INVALID \(/m.test(droppedRun.out), droppedRun.out.slice(-700));
+    // 2.23.0: three exports, the middle one starting between the other two so that each joins its neighbour. In a folder
+    // the first and the last are not neighbours: an entry they share is held to one copy as the folder is read, and two
+    // whose times overlap are read again and compared.
+    const trioFolder = async (name, lastTweak) => {
+      const folder = mkdtempSync(join(dir, `${name}-`));
+      writeFileSync(join(folder, "1-first.zip"), writeZip((await buildSyntheticPack({})).entries));
+      writeFileSync(join(folder, "2-middle.zip"), writeZip((await buildSyntheticPack({ windowFrom: "2026-01-15T05:00:00+00:00", windowTo: "2026-01-15T08:00:00+00:00",
+        generatedAt: "2026-01-15T08:30:00.0000000+00:00", dropFirstEntry: true, partialFromR3: true, chainTruncated: true, manifestTruncated: true })).entries));
+      writeFileSync(join(folder, "3-last.zip"), writeZip((await buildSyntheticPack({ windowFrom: "2026-01-15T06:00:00+00:00", generatedAt: "2026-01-15T13:00:00.0000000+00:00",
+        partialFromR3: true, chainTruncated: true, manifestTruncated: true, ...lastTweak })).entries));
+      return folder;
+    };
+    const missingFolder = await trioFolder("trio-missing", { dropFirstEntry: true });
+    const missingRun = cli(missingFolder, "--expect-fingerprint", fp);
+    ok("2.23.0: script, a folder of three exports, the last missing an entry the first holds, the middle between them -> exit 1, the first and the last read again and compared",
+      missingRun.code === 1 && /^SEQUENCE: INVALID \(the records disagree: change-trail entry dddddddd-0000-4000-8000-000000000001 \(held_decision\.denied\) is in .*1-first\.zip but missing from .*3-last\.zip's mutations\/policy-trail\.json, inside the period .*3-last\.zip covers\)$/m.test(missingRun.out),
+      missingRun.out.slice(-700));
+    const missingFiles = cli(...["1-first.zip", "2-middle.zip", "3-last.zip"].map((n) => join(missingFolder, n)), "--expect-fingerprint", fp);
+    ok("2.23.0: script, the same three named one by one -> exit 1, the same failure",
+      missingFiles.code === 1 && /^SEQUENCE: INVALID \(the records disagree: change-trail entry dddddddd-0000-4000-8000-000000000001 \(held_decision\.denied\) is in .*1-first\.zip but missing from .*3-last\.zip's/m.test(missingFiles.out),
+      missingFiles.out.slice(-700));
+    const goneRun = cli(await trioFolder("trio-gone", { trailGone: true }), "--expect-fingerprint", fp);
+    ok("2.23.0: script, a folder of three exports, the last naming no one on an entry the first seals -> exit 1, the entry and both exports named",
+      goneRun.code === 1 && /^SEQUENCE: INVALID \(the records disagree: change-trail entry dddddddd-0000-4000-8000-000000000001 \(held_decision\.denied\), listed in mutations\/policy-trail\.json, names who acted in .*1-first\.zip but not in .*3-last\.zip; .*1-first\.zip carries the entry's sealed record, and .*1-first\.zip's copy of the entry matches it\)$/m.test(goneRun.out),
+      goneRun.out.slice(-700));
+    const honestRun = cli(await trioFolder("trio-honest", {}), "--expect-fingerprint", fp);
+    ok("2.23.0: script, a folder of three genuine exports, the middle between the other two -> exit 0, SEQUENCE VALID",
+      honestRun.code === 0 && /^SEQUENCE: VALID \(3 parts join record to record/m.test(honestRun.out), honestRun.out.slice(-700));
+    // 2.23.0: three exports whose periods follow one another, the last holding a row of a decision the first holds, its
+    // record outside the last's records file and its outcome and time rewritten: they are read again and compared.
+    const apartFolder = mkdtempSync(join(dir, "apart-"));
+    const emptyRecords = { noLinks: true, chainTruncated: true, manifestTruncated: true };
+    writeFileSync(join(apartFolder, "1-first.zip"), writeZip((await buildSyntheticPack({})).entries));
+    writeFileSync(join(apartFolder, "2-middle.zip"), writeZip((await buildSyntheticPack({ ...emptyRecords, windowFrom: "2026-01-15T12:00:00+00:00",
+      windowTo: "2026-01-16T00:00:00+00:00", generatedAt: "2026-01-16T00:30:00.0000000+00:00", editDecisions: () => [] })).entries));
+    writeFileSync(join(apartFolder, "3-last.zip"), writeZip((await buildSyntheticPack({ ...emptyRecords, windowFrom: "2026-01-16T00:00:00+00:00",
+      windowTo: "2026-01-16T12:00:00+00:00", generatedAt: "2026-01-16T12:30:00.0000000+00:00",
+      editDecisions: ([row]) => { const { recordSha256, ...untied } = row; return [{ ...untied, action: "allow", occurredAt: "2026-01-16T06:00:00+00:00" }]; } })).entries));
+    const apartRun = cli(apartFolder, "--expect-fingerprint", fp);
+    ok("2.23.0: script, a folder of three exports apart in time, the last rewriting a decision the first holds -> exit 1, the decision named",
+      apartRun.code === 1 && /^SEQUENCE: INVALID \(the records disagree: decision aaaaaaaa-0000-4000-8000-000000000002 reads differently in .*3-last\.zip than in .*1-first\.zip: its .*outcome.*time\)$/m.test(apartRun.out)
+        && (apartRun.out.match(/^RESULT: VALID/gm) ?? []).length === 3, apartRun.out.slice(-900));
     ok("2.21.1: the usage and every line of a run call the tool the checker, never the verifier",
       !/verifier/i.test(help) && [unchecked, named, otherFormat, exportAlone, earlierRun, cpLater].every((run) => !/verifier/i.test(run.out)),
       [help, unchecked.out, named.out, otherFormat.out, exportAlone.out, earlierRun.out, cpLater.out].join("\n").split("\n").filter((l) => /verifier/i.test(l)).join(" | "));
-    ok("script --version reports 2.22.0", /^mandate-verify 2\.22\.0 /.test(cli("--version").out));
+    ok("script --version reports 2.23.0", /^mandate-verify 2\.23\.0 /.test(cli("--version").out));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2460,6 +2514,95 @@ for (const [label, tweak, expect] of [
     crossPair.status === "invalid" && crossPair.kind === "changed" && crossPair.detail === `change-trail entry ${firstEntry} (held_decision.denied), listed in `
       + "a's mutations/policy-trail.json and b's chain/erasures.json, names who acted in a but not in b; a carries the entry's sealed record, and a's copy of the entry matches it",
     JSON.stringify(crossPair));
+
+  // 2.23.0: three exports, the middle one placed so that each joins its neighbour: it starts between the other two, and
+  // neither carries the first entry nor its sealed record. Under 2.22.0 the first and the last were never compared.
+  const middle = await pack({ windowFrom: "2026-01-15T05:00:00+00:00", windowTo: "2026-01-15T08:00:00+00:00", generatedAt: "2026-01-15T08:30:00.0000000+00:00",
+    dropFirstEntry: true, partialFromR3: true, chainTruncated: true, manifestTruncated: true });
+  const fromSix = { windowFrom: "2026-01-15T06:00:00+00:00", generatedAt: later, partialFromR3: true, chainTruncated: true, manifestTruncated: true };
+  const lastGone = await pack({ ...fromSix, trailGone: true });
+  const lastDropped = await pack({ ...fromSix, dropFirstEntry: true });
+  const lastHonest = await pack(fromSix);
+  ok("2.23.0: the middle export and the three last exports are each valid alone",
+    [middle, lastGone, lastDropped, lastHonest].every((r) => r.overall === "valid"), JSON.stringify([middle, lastGone, lastDropped, lastHonest].map((r) => r.chain?.reason ?? r.overall)));
+  const trio = (last) => checkPackSequence([{ name: "a", result: sealedFirst }, { name: "m", result: middle }, { name: "z", result: last }]);
+  ok("2.23.0: ... and each joins its neighbour, as 2.22.0 compared them",
+    [lastGone, lastDropped, lastHonest].every((last) => checkPackSequence([{ name: "a", result: sealedFirst }, { name: "m", result: middle }]).status === "valid"
+      && checkPackSequence([{ name: "m", result: middle }, { name: "z", result: last }]).status === "valid"));
+  const goneTrio = trio(lastGone);
+  ok("2.23.0: three exports, the last naming no one on an entry the first seals, the middle starting between them -> INVALID, the first and the last compared",
+    goneTrio.status === "invalid" && goneTrio.kind === "changed" && goneTrio.id === firstEntry && goneTrio.fields.join() === "who acted"
+      && goneTrio.reason === `a and z: change-trail entry ${firstEntry} (held_decision.denied), listed in mutations/policy-trail.json, names who acted in a but not in z; `
+        + "a carries the entry's sealed record, and a's copy of the entry matches it", JSON.stringify(goneTrio));
+  const droppedTrio = trio(lastDropped);
+  ok("2.23.0: three exports, the last missing an entry of its period the first holds -> INVALID",
+    droppedTrio.status === "invalid" && droppedTrio.kind === "missing" && droppedTrio.id === firstEntry
+      && droppedTrio.detail === `change-trail entry ${firstEntry} (held_decision.denied) is in a but missing from z's mutations/policy-trail.json, inside the period z covers`,
+    JSON.stringify(droppedTrio));
+  const reversedTrio = checkPackSequence([{ name: "z", result: lastGone }, { name: "a", result: sealedFirst }, { name: "m", result: middle }]);
+  ok("2.23.0: ... given in another order -> the same failure", reversedTrio.status === "invalid" && reversedTrio.reason === goneTrio.reason, JSON.stringify(reversedTrio));
+  const honestTrio = trio(lastHonest);
+  ok("2.23.0: three genuine exports, the middle starting between the other two -> joins", honestTrio.status === "valid" && honestTrio.packs === 3, JSON.stringify(honestTrio));
+
+  // 2.23.0: exports whose times do not overlap are compared on the change-trail entries they share, as an erasure entry
+  // sits in every export whose records it erased. Each is cut here to its entries alone, so only that comparison can fail.
+  const entriesOnly = (r, windowFrom, windowTo, joins) => ({ ...r, inProgress: false, truncated: false,
+    identity: { ...r.identity, windowFrom, windowTo, generatedAt: windowTo.replace("+00:00", ".0000000+00:00") },
+    chain: Object.defineProperty({ ...r.chain }, "joins", { value: { ...r.chain.joins, first: null, last: null, byId: new Map(), atById: new Map(), live: new Map(),
+      register: { rows: new Map(), fields: new Set() }, ...joins } }) });
+  const none = { trail: new Map(), registerChanges: new Map(), erasureEntries: new Map(), finalDecisionEntries: new Map(), changeLinks: new Map(),
+    sealHashes: new Map(), untiedSeals: new Map() };
+  const day = (h) => `2026-01-1${5 + Math.floor(h / 24)}T${String(h % 24).padStart(2, "0")}:00:00+00:00`;
+  const firstDay = entriesOnly(sealedFirst, day(0), day(12), { trail: new Map(), registerChanges: new Map(), finalDecisionEntries: new Map(),
+    changeLinks: new Map(), sealHashes: new Map(), untiedSeals: new Map() });
+  const between = entriesOnly(sealedFirst, day(12), day(24), none);
+  const { actorId: _lid, actorDisplay: _lname, actorSalt: _lsalt, ...erasureNoOne } = sealedFirst.chain.joins.erasureEntries.get(erasureEntry).row;
+  const farErasure = entriesOnly(sealedFirst, day(24), day(36), { ...none,
+    erasureEntries: new Map([[erasureEntry, { ...sealedFirst.chain.joins.erasureEntries.get(erasureEntry), row: { ...erasureNoOne, actorType: "mandate_support" } }]]) });
+  const extents = [firstDay, between, farErasure].map((r) => checker.packExtent?.(r));
+  ok("2.23.0: three exports whose periods follow one another -> no two beyond neighbours overlap", checker.farPairs?.(extents)?.length === 0, JSON.stringify(extents, (k, v) => (typeof v === "bigint" ? String(v) : v)));
+  const sharedErasure = checkPackSequence([{ name: "a", result: firstDay }, { name: "m", result: between }, { name: "z", result: farErasure }]);
+  ok("2.23.0: an erasure entry named in the first export and not in the third, the periods apart, the second between -> INVALID",
+    sharedErasure.status === "invalid" && sharedErasure.kind === "changed" && sharedErasure.id === erasureEntry
+      && sharedErasure.reason === `a and z: change-trail entry ${erasureEntry} (dsr.delete), listed in chain/erasures.json, names who acted in a but not in z; `
+        + "neither export carries the entry's sealed record", JSON.stringify(sharedErasure));
+  const untiedEarly = entriesOnly(droppedLater, day(0), day(12), { ...none, trail: new Map([[firstEntry, droppedLater.chain.joins.trail.get(firstEntry)]]),
+    untiedSeals: new Map([[firstEntry, droppedLater.chain.joins.untiedSeals.get(firstEntry)]]) });
+  const recordFar = entriesOnly(sealedFirst, day(24), day(36), { ...none, changeLinks: new Map([[firstEntry, firstChange]]),
+    sealHashes: new Map([[firstEntry, sealedFirst.chain.joins.sealHashes.get(firstEntry)]]) });
+  const sealedLater = checkPackSequence([{ name: "a", result: untiedEarly }, { name: "m", result: between }, { name: "z", result: recordFar }]);
+  ok("2.23.0: a copy that does not match the sealed record a later export carries, the periods apart -> INVALID, once the record is read",
+    sealedLater.status === "invalid" && sealedLater.fields.join() === "sealed record"
+      && sealedLater.reason === `a and z: change-trail entry ${firstEntry} (held_decision.denied) in a differs from the entry's sealed record, which z carries`,
+    JSON.stringify(sealedLater));
+  const twiceFar = checkPackSequence([{ name: "a", result: entriesOnly(sealedFirst, day(0), day(12), { ...none, changeLinks: new Map([[firstEntry, firstChange]]),
+    sealHashes: new Map([[firstEntry, sealedFirst.chain.joins.sealHashes.get(firstEntry)]]) }) }, { name: "m", result: between },
+  { name: "z", result: entriesOnly(sealedFirst, day(24), day(36), { ...none, changeLinks: new Map([[firstEntry, "bbbbbbbb-0000-4000-8000-0000000000ee"]]),
+    sealHashes: new Map([[firstEntry, sealedFirst.chain.joins.sealHashes.get(firstEntry)]]) }) }]);
+  ok("2.23.0: two exports far apart that seal one entry by different records -> INVALID",
+    twiceFar.status === "invalid" && twiceFar.reason === `a and z: change-trail entry ${firstEntry} is sealed by record ${firstChange} in a and by record `
+      + "bbbbbbbb-0000-4000-8000-0000000000ee in z; Mandate seals an entry once", JSON.stringify(twiceFar));
+  const sameFar = checkPackSequence([{ name: "a", result: firstDay }, { name: "m", result: between },
+    { name: "z", result: entriesOnly(sealedFirst, day(24), day(36), { ...none, erasureEntries: sealedFirst.chain.joins.erasureEntries }) }]);
+  ok("2.23.0: the same erasure entry in two exports far apart -> joins", sameFar.status === "valid", JSON.stringify(sameFar));
+  // 2.23.0: two exports whose times are apart are still compared when they hold one record or decision, since an erased
+  // record's time is not signed, nor is that of a decision whose record is outside its export's records file.
+  const r2 = "aaaaaaaa-0000-4000-8000-000000000002";
+  const r4 = "aaaaaaaa-0000-4000-8000-000000000004";
+  const { recordSha256: _r2sha, ...r2Untied } = sealedFirst.chain.joins.register.rows.get(r2);
+  const movedRow = entriesOnly(sealedFirst, day(24), day(36), { ...none,
+    register: { rows: new Map([[r2, { ...r2Untied, action: "allow", occurredAt: "2026-01-16T06:00:00+00:00" }]]), fields: sealedFirst.chain.joins.register.fields } });
+  const movedPair = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "m", result: between }, { name: "z", result: movedRow }]);
+  ok("2.23.0: a decision whose row in a far later export, outside its records file, gives another outcome and time -> INVALID",
+    movedPair.status === "invalid" && movedPair.kind === "changed" && movedPair.id === r2 && movedPair.subject === "decision"
+      && ["outcome", "time"].every((f) => movedPair.fields.includes(f)) && movedPair.reason.startsWith(`a and z: decision ${r2} reads differently in z than in a: its `),
+    JSON.stringify(movedPair));
+  const erasedFar = entriesOnly(sealedFirst, day(24), day(36), { ...none, byId: new Map([[r4, sealedFirst.chain.joins.byId.get(r4)]]), atById: new Map([[r4, null]]) });
+  const erasedFirst = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "m", result: between },
+    { name: "z", result: { ...erasedFar, identity: { ...erasedFar.identity, generatedAt: "2026-01-15T01:00:00.0000000+00:00" } } }]);
+  ok("2.23.0: a record erased in a far export that says it was made first, its time unreadable there -> INVALID",
+    erasedFirst.status === "invalid" && erasedFirst.kind === "erased-first" && erasedFirst.id === r4
+      && erasedFirst.detail === `decision ${r4} is erased in z but whole in a, though z says it was made first`, JSON.stringify(erasedFirst));
   const queuedPair = checkPackSequence([{ name: "a", result: await pack({ untied: "named" }) }, { name: "b", result: await pack({ generatedAt: later, untied: "salted" }) }]);
   ok("2.6.0: an entry exported while queued, then with the salt of its seal -> joins", queuedPair.status === "valid", JSON.stringify(queuedPair));
   const otherPair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "other" }) }]);

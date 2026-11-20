@@ -1,20 +1,31 @@
 # Changelog
 
-## 2.22.0 (2026-11-20)
+## 2.23.0 (2026-11-20)
 
-The first release here since 2.6.0. Versions 2.7.0 to 2.21.1 were not released in this repository; each has its own entry below, and this release carries all of them.
+The first release here since 2.6.0. Versions 2.7.0 to 2.22.0 were not released in this repository; each has its own entry below, and this release carries all of them.
+
+Stricter
+- Exports are compared beyond their neighbours. Until 2.22.0 only neighbours were compared: exports next to each other in order of their periods, or in name order in a folder. So an export whose period starts between those of two others could keep those two from being compared. Now any two exports whose times overlap, or that hold the same record or decision, are compared, record by record and entry by entry, as neighbours are. An export's time is its period, widened to every record it holds.
+- A change-trail entry that any two exports hold must read the same in both and be sealed by the same record, whatever their periods. For example, an erasure entry sits in every export whose records it erased.
+- The rules on gaps between periods are unchanged.
+
+Cost
+- Exports named one by one are held in memory as before. n exports of one period now take n(n-1)/2 comparisons instead of n-1.
+- A folder is still read a part at a time. The script keeps two parts, the change-trail entries it has read and the id of every record and decision it has read (about 50 bytes each), and reads two parts again, a pair at a time, to compare them when they are not neighbours but overlap or hold the same record or decision. Each part read again is checked in full again. A part whose file changed since it was checked, or cannot be read again, fails the sequence. The parts of one complete export follow one another and seldom overlap beyond their neighbours; at worst, with n exports of one period, (n-1)(n-2)/2 pairs are read again.
+
+Repository
+- `test/vectors/checkpoint-timestamp-v1.vector.json` is new: a real RFC 3161 token from DigiCert's public timestamp service over the checkpoint of `checkpoint-signed-payload-v1.vector.json`.
+- `test/check.mjs` carries every case added from 2.7.0 to 2.23.0, in sections numbered 1 to 7, each label naming the release that first carried its check. Four options write synthetic records signed with the test key (`--write-joined-pair`, `--write-final-decisions`, `--write-sign-off`, `--write-earlier-layout`), so an earlier checker can be run on the same files.
+- The three sample records were exported again. Each carries an assessment, a review of one of its findings and an artifact version, and every checkpoint carries an outside timestamp. Same sample signing key; the published fingerprint is unchanged.
+- README, SECURITY.md and `docs/evidence-pack-format.md` updated for everything since 2.6.0. The README defines the terms the output uses, and the docs call the tool the checker.
+
+## 2.22.0 (2026-11-20)
 
 Stricter
 - Two exports whose copies of one change-trail entry differ on who acted are INVALID, including when one copy names no one. Until 2.21.1 a copy that named no one was let through with a note, so a later export could drop who acted on an entry an earlier export's sealed record names, for example in an export whose records file holds part of its period. The reason names the entry, the export that names no one, and which export carries the entry's sealed record.
 - Every copy of an entry in one export is compared with every copy in the other, in `mutations/policy-trail.json`, the register, `chain/erasures.json` and `assessments/final-decisions.json`, whichever lists they are in.
 - A copy whose own export does not carry its sealed record must match the record the other export carries, and two exports that seal one entry by different records disagree.
 - One export whose `chain/links.json` seals an entry by two records is INVALID: Mandate seals an entry once.
-
-Repository
-- `test/vectors/checkpoint-timestamp-v1.vector.json` is new: a real RFC 3161 token from DigiCert's public timestamp service over the checkpoint of `checkpoint-signed-payload-v1.vector.json`.
-- `test/check.mjs` carries every case added from 2.7.0 to 2.22.0, in sections numbered 1 to 7, each label naming the release that first carried its check. Four options write synthetic records signed with the test key (`--write-joined-pair`, `--write-final-decisions`, `--write-sign-off`, `--write-earlier-layout`), so an earlier checker can be run on the same files.
-- The three sample records were exported again. Each carries an assessment, a review of one of its findings and an artifact version, and every checkpoint carries an outside timestamp. Same sample signing key; the published fingerprint is unchanged.
-- README, SECURITY.md and `docs/evidence-pack-format.md` updated for everything since 2.6.0. The README defines the terms the output uses, and the docs call the tool the checker.
 
 ## 2.21.1 (2026-11-20)
 

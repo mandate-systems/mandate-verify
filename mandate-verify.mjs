@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-const TOOL_VERSION = "2.22.0";
+const TOOL_VERSION = "2.23.0";
 
 const VERIFIER_CORE_BEGIN = "VERIFIER-CORE-BEGIN v2";
 
@@ -2410,16 +2410,42 @@ function registerRowDifference(p, q, shownA, shownB) {
 // sealed record, and an erasure or the retention setting never changes that, so two copies of one entry never differ on
 // who acted. No copy that names no one is accepted: a seal that names no one proves nothing, since a seal can be deleted
 // and the entry sealed again by an account that no longer resolves. The reason says which export dropped the name.
-function unnamedFailure(id, action, file, unnamed, unnamedJoins, named, namedJoins, others) {
+function unnamedFailure(id, action, file, unnamed, named, others) {
   const said = `change-trail entry ${id} (${action}), listed in ${file}, names who acted in ${named.name} but not in ${unnamed.name}`;
-  const sealed = namedJoins.changeLinks.has(id)
+  const sealed = named.sealed
     ? `${named.name} carries the entry's sealed record, and ${named.name}'s copy of the entry matches it`
-    : unnamedJoins.changeLinks.has(id) ? `only ${unnamed.name} carries the entry's sealed record` : "neither export carries the entry's sealed record";
+    : unnamed.sealed ? `only ${unnamed.name} carries the entry's sealed record` : "neither export carries the entry's sealed record";
   return `${said}; ${sealed}`
     + `${others.length > 0 ? `; the copies also differ in their ${others.join(", ")}` : ""}`;
 }
 
-function comparePacks(a, b) {
+// 2.22.0: the erasure entries and the final decisions' entries are change-trail entries too, and one export may carry an
+// entry in one list while another carries it in another, so every copy in one is held to every copy in the other.
+function changeCopies(j) {
+  const all = new Map();
+  for (const [file, key] of [["mutations/policy-trail.json", "trail"], ["register/decisions.json", "registerChanges"], ["chain/erasures.json", "erasureEntries"],
+    [FINAL_DECISIONS_FILE, "finalDecisionEntries"]]) {
+    for (const [id, entry] of j[key] ?? []) all.set(id, [...(all.get(id) ?? []), { file, row: entry.row }]);
+  }
+  return all;
+}
+
+// The reason two copies of one change-trail entry differ, or null when they read the same. `x` and `y` are the two
+// exports, each with its name, its copy and whether it carries the entry's sealed record; `older` and `newer` name them
+// by when they say they were made.
+function copyDifference(id, x, y, older, newer) {
+  const diff = changeRowDifference(x.copy.row, y.copy.row);
+  if (diff.fields.length === 0) return null;
+  const file = x.copy.file === y.copy.file ? x.copy.file : `${x.name}'s ${x.copy.file} and ${y.name}'s ${y.copy.file}`;
+  return {
+    kind: "changed", id, subject: "change-trail entry", fields: diff.fields,
+    detail: diff.gone
+      ? unnamedFailure(id, x.copy.row.action, file, ...(diff.gone === 1 ? [x, y] : [y, x]), diff.fields.filter((f) => f !== "who acted"))
+      : `change-trail entry ${id} (${x.copy.row.action}) in ${file} reads differently in ${newer} than in ${older}: its ${diff.fields.join(", ")}`,
+  };
+}
+
+function comparePacks(a, b, noted = null) {
   const ja = a.result.chain.joins;
   const jb = b.result.chain.joins;
   const notes = [];
@@ -2437,9 +2463,12 @@ function comparePacks(a, b) {
       if (made(x) !== null && made(y) !== null && made(y) < made(x)) {
         return { kind: "erased-first", id, subject: subjectOf(id), detail: `${subjectOf(id)} ${id} is erased in ${y.name} but whole in ${x.name}, though ${y.name} says it was made first` };
       }
+      // 2.23.0: a record already named as erased between two other exports of the sequence is not named again.
+      if (noted?.has(id)) continue;
       erased.push({ id, outcome: live.outcome, when: live.when });
     }
   }
+  for (const e of erased) noted?.add(e.id);
   if (erased.length > 0) {
     const noun = erased.every((e) => e.outcome !== "result" && e.outcome !== "imported" && e.outcome !== "test") ? "decision" : "record";
     const named = erased.slice(0, 5).map((e) => `${e.id} (${e.outcome}, ${e.when})`).join(", ");
@@ -2475,35 +2504,20 @@ function comparePacks(a, b) {
       return { kind: "changed", id, subject: subjectOf(id), fields: ["sealed record"], detail: `${subjectOf(id)} ${id} reads differently in ${second.name} than in ${first.name}: its sealed record` };
     }
   }
-  // 2.22.0: the erasure entries and the final decisions' entries are change-trail entries too, and one export may carry an
-  // entry in one list while the other carries it in another, so every copy in one is held to every copy in the other.
-  const copies = (j) => {
-    const all = new Map();
-    for (const [file, key] of [["mutations/policy-trail.json", "trail"], ["register/decisions.json", "registerChanges"], ["chain/erasures.json", "erasureEntries"],
-      [FINAL_DECISIONS_FILE, "finalDecisionEntries"]]) {
-      for (const [id, entry] of j[key] ?? []) all.set(id, [...(all.get(id) ?? []), { file, row: entry.row }]);
-    }
-    return all;
-  };
-  const copiesB = copies(jb);
-  for (const [id, inA] of copies(ja)) {
+  const copiesA = changeCopies(ja);
+  const copiesB = changeCopies(jb);
+  for (const [id, inA] of copiesA) {
     for (const ca of inA) {
       for (const cb of copiesB.get(id) ?? []) {
-        const diff = changeRowDifference(ca.row, cb.row);
-        if (diff.fields.length === 0) continue;
-        const file = ca.file === cb.file ? ca.file : `${a.name}'s ${ca.file} and ${b.name}'s ${cb.file}`;
-        return {
-          kind: "changed", id, subject: "change-trail entry", fields: diff.fields,
-          detail: diff.gone
-            ? unnamedFailure(id, ca.row.action, file, ...(diff.gone === 1 ? [a, ja, b, jb] : [b, jb, a, ja]), diff.fields.filter((f) => f !== "who acted"))
-            : `change-trail entry ${id} (${ca.row.action}) in ${file} reads differently in ${second.name} than in ${first.name}: its ${diff.fields.join(", ")}`,
-        };
+        const differs = copyDifference(id, { name: a.name, copy: ca, sealed: ja.changeLinks.has(id) }, { name: b.name, copy: cb, sealed: jb.changeLinks.has(id) },
+          first.name, second.name);
+        if (differs) return differs;
       }
     }
   }
   // 2.22.0: one entry is sealed by one record, so two exports that seal it by different records disagree; and a copy whose
   // own export does not carry its sealed record must still match the record the other export carries.
-  const copiesOf = new Map([[ja, copies(ja)], [jb, copiesB]]);
+  const copiesOf = new Map([[ja, copiesA], [jb, copiesB]]);
   for (const [x, jx, y, jy] of sides) {
     const copiesY = copiesOf.get(jy);
     for (const [id, seal] of jx.sealHashes ?? []) {
@@ -2596,8 +2610,174 @@ export function checkPackSequence(packs) {
     if (!ja.last || !jb.first) continue;
     if (!ja.byId.has(jb.first.id) && jb.first.prev !== ja.last.hash) return fail("continuity", "the later one does not continue from the earlier one");
   }
+  // 2.23.0: an export placed between two others does not keep them from being compared. Every two whose times overlap, or
+  // that hold one record or decision, are compared as neighbours are, and every change-trail entry is held to one copy
+  // and one seal across all of them.
+  const read = ordered.map((p) => (p.result.format === undefined && p.result.chain?.joins ? p : null));
+  const noted = new Set(erased.map((e) => e.id));
+  const shared = sharedRecords();
+  read.forEach((p, i) => p && shared.add(i, p.result.chain.joins));
+  for (const [i, j] of farPairs(read.map((p) => p && packExtent(p.result)), shared.pairs())) {
+    const compared = compareOverlapping(ordered[i], ordered[j], noted);
+    if (compared.status === "invalid") return compared;
+    notes.push(...compared.notes);
+    erased.push(...compared.erased);
+  }
+  const ledger = entryLedger();
+  for (const p of read) {
+    const differs = p && ledger(p);
+    if (differs) return differs;
+  }
   if (notRead) return { status: "unsupported", kind: "format", reason: `${notRead} is in a format this checker does not read` };
-  return { status: "valid", packs: ordered.length, notes, erased, ...sequenceProgress(ordered) };
+  return { status: "valid", packs: ordered.length, notes: [...new Set(notes)], erased, ...sequenceProgress(ordered) };
+}
+
+// 2.23.0: the time an export speaks for: its period, widened to every record its records file holds, which reaches past
+// the period to whole checkpoint windows and to the seals of the period's entries. An end that cannot be read is open.
+export function packExtent(result) {
+  let from = instantTicks(result.identity?.windowFrom);
+  let to = instantTicks(result.identity?.windowTo);
+  for (const t of result.chain?.joins?.atById?.values() ?? []) {
+    if (t === null) continue;
+    if (from !== null && t < from) from = t;
+    if (to !== null && t > to) to = t;
+  }
+  return { from, to };
+}
+
+// 2.23.0: the exports that hold one record or one decision, by their places in the sequence, since two of them may not
+// overlap in time: an erased record's time is not signed, nor is that of a decision whose record is outside its export's
+// records file. Each id is kept as a 53-bit hash, not as text, to keep a large folder's index small, and the index is
+// split so that no one Map reaches the engine's limit on entries; two ids that share a hash only add a comparison.
+// Change-trail entries are left to entryLedger, since one erasure entry can sit in every export of a long sequence.
+export function sharedRecords() {
+  const shards = Array.from({ length: 64 }, () => new Map());
+  const pairs = new Map();
+  return {
+    add(index, joins) {
+      const paired = new Set();
+      for (const ids of [joins.byId.keys(), joins.register.rows.keys()]) {
+        for (const id of ids) {
+          const key = idHash(id);
+          const holders = shards[key % 64];
+          const known = holders.get(key);
+          if (known === undefined) {
+            holders.set(key, index);
+            continue;
+          }
+          const list = typeof known !== "number" ? known : known >= 0 ? [known] : [Math.floor((-1 - known) / 2097152), (-1 - known) % 2097152];
+          if (list.includes(index)) continue;
+          for (const h of list) {
+            if (paired.has(h)) continue;
+            paired.add(h);
+            pairs.set(`${h} ${index}`, [h, index]);
+          }
+          // Two holders, the usual most an id has (neighbours whose records overlap), are kept as one negative number,
+          // which costs a fraction of an array.
+          holders.set(key, list.length === 1 && known < 2097152 && index < 2097152 ? -1 - (known * 2097152 + index) : [...list, index]);
+        }
+      }
+    },
+    pairs: () => [...pairs.values()],
+  };
+}
+
+// cyrb53 (public domain): a 53-bit hash of a string.
+function idHash(text) {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return 4294967296 * (2097151 & h2) + (h1 >>> 0);
+}
+
+// Every two exports of a sequence that are not neighbours and whose times overlap, or that `shared` names as holding one
+// record or decision, by their places in it, in order. An export left out (null) is compared with none.
+export function farPairs(extents, shared = []) {
+  const pairs = new Map();
+  for (let i = 0; i < extents.length; i++) {
+    for (let j = i + 2; j < extents.length; j++) {
+      const x = extents[i];
+      const y = extents[j];
+      if (!x || !y) continue;
+      const apart = (x.from !== null && y.to !== null && x.from > y.to) || (y.from !== null && x.to !== null && y.from > x.to);
+      if (!apart) pairs.set(`${i} ${j}`, [i, j]);
+    }
+  }
+  for (const [h, k] of shared) {
+    const [i, j] = h < k ? [h, k] : [k, h];
+    if (j - i >= 2 && extents[i] && extents[j]) pairs.set(`${i} ${j}`, [i, j]);
+  }
+  return [...pairs.values()].sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+}
+
+export function compareOverlapping(p, q, noted = null) {
+  const [a, b] = Date.parse(q.result.identity?.windowFrom ?? 0) < Date.parse(p.result.identity?.windowFrom ?? 0) ? [q, p] : [p, q];
+  const compared = comparePacks(a, b, noted);
+  if (compared.kind) {
+    return { status: "invalid", kind: compared.kind, reason: `${a.name} and ${b.name}: ${compared.detail}`, detail: compared.detail,
+      id: compared.id, subject: compared.subject, fields: compared.fields ?? [] };
+  }
+  return { status: "valid", notes: compared.notes, erased: compared.erased };
+}
+
+// 2.23.0: a change-trail entry may sit in exports whose times are far apart, as an erasure entry sits in every export
+// whose records it erased, so each export's entries are held to the first copy read and the first record read that seals
+// them, whichever exports lie between. Only change-trail entries are kept, which are few beside the records; two exports
+// that hold one record or decision are compared whole (sharedRecords). Returns a function that takes each export in turn
+// and returns the first disagreement, or null.
+export function entryLedger() {
+  const copies = new Map();
+  const seals = new Map();
+  const waiting = new Map();
+  return (p) => {
+    const j = p.result.chain.joins;
+    const made = instantTicks(p.result.identity?.generatedAt);
+    const fail = (other, differs) => ({ status: "invalid", kind: "changed", reason: `${other} and ${p.name}: ${differs.detail}`, detail: differs.detail,
+      id: differs.id, subject: "change-trail entry", fields: differs.fields });
+    const own = changeCopies(j);
+    for (const [id, list] of own) {
+      const first = copies.get(id);
+      if (!first) {
+        copies.set(id, { name: p.name, made, sealed: j.changeLinks.has(id), list });
+        continue;
+      }
+      const [older, newer] = made !== null && first.made !== null && made < first.made ? [p.name, first.name] : [first.name, p.name];
+      for (const earlier of first.list) {
+        for (const copy of list) {
+          const differs = copyDifference(id, { name: first.name, copy: earlier, sealed: first.sealed }, { name: p.name, copy, sealed: j.changeLinks.has(id) }, older, newer);
+          if (differs) return fail(first.name, differs);
+        }
+      }
+    }
+    const sealDiffers = (id, action, copyIn, recordIn) => ({ id, fields: ["sealed record"],
+      detail: `change-trail entry ${id} (${action}) in ${copyIn} differs from the entry's sealed record, which ${recordIn} carries` });
+    for (const [id, record] of j.changeLinks) {
+      const known = seals.get(id);
+      if (known && known.record !== record) {
+        return fail(known.name, { id, fields: ["sealed record"],
+          detail: `change-trail entry ${id} is sealed by record ${known.record} in ${known.name} and by record ${record} in ${p.name}; Mandate seals an entry once` });
+      }
+      if (known) continue;
+      const seal = j.sealHashes.get(id);
+      seals.set(id, { name: p.name, record, seal });
+      const early = (waiting.get(id) ?? []).find((w) => w.seal !== seal);
+      if (early) return fail(early.name, sealDiffers(id, early.action, early.name, p.name));
+      waiting.delete(id);
+    }
+    for (const [id, list] of j.untiedSeals ?? []) {
+      const known = seals.get(id);
+      const action = (own.get(id) ?? [])[0]?.row.action;
+      if (known && list.some((seal) => seal !== known.seal)) return fail(known.name, sealDiffers(id, action, p.name, known.name));
+      if (!known) waiting.set(id, [...(waiting.get(id) ?? []), ...list.map((seal) => ({ name: p.name, seal, action }))]);
+    }
+    return null;
+  };
 }
 
 export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}) {
@@ -3105,13 +3285,16 @@ function usage() {
     "",
     "Several records are checked one by one and then together: the parts of one complete export, or an earlier and a later export.",
     "They must have one Mandate ID and be signed by one key, or by keys you named. Their periods must leave no gap, and each must continue from the one before.",
-    "Where two cover the same time, no record or change-trail entry one holds may be missing from the other or read differently there,",
-    "and a decision's readable row, the person included, must read the same in both.",
+    "Where two cover the same time or hold the same record or decision, next to each other or not, no record or change-trail entry one holds may be missing",
+    "from the other or read differently there, and a decision's readable row, the person included, must read the same in both.",
+    "A change-trail entry that any two hold must read the same in both, whatever their periods.",
     "Each export covers its period up to a minute before it says it was made, or only the span its records hold when it says it is partial;",
     "what that leaves out is named, and so is any decision erased between the exports.",
     "An export made before its period ended is in progress: it holds what was recorded up to when it was made, and says so.",
     "A later export must then start no later than a minute before the one in progress was made, or the time between is in neither.",
-    "A folder stands for every record in it, in name order: unzip a complete export and give the checker its folder. A folder is checked two parts at a time, so a long export needs no more memory than two parts.",
+    "A folder stands for every record in it, in name order: unzip a complete export and give the checker its folder. A folder is read a part at a time. Besides two parts,",
+    "the checker keeps the change-trail entries it has read and the id of every record and decision it has read. Two parts that are not next to each other",
+    "but overlap in time, or hold the same record or decision, are read again to be compared.",
     "A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the checker the folder.",
     "Parts named as a complete export names them (part-0001-of-0012.zip) must all be there, even when one is given alone: a part missing is named and the check fails.",
     "",
@@ -3254,10 +3437,13 @@ async function main(argv) {
   const streamedNotes = [];
   const streamedErased = [];
   const streamedReach = [];
+  const ledger = entryLedger();
+  const shared = sharedRecords();
+  const held = [];
   let parts = 0;
   const partCodes = [];
   for (const packPath of recordPaths) {
-    const { code, result, kind, words } = emit(await verifyOne(packPath, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
+    const { code, result, kind, words, digest } = emit(await verifyOne(packPath, expectFingerprints, asJson, { timestampRoots, requireTimestamps }));
     worst = worse(worst, code);
     parts++;
     partCodes.push(code);
@@ -3268,6 +3454,7 @@ async function main(argv) {
       if (pack) verified.push(pack);
     } else if (!pack) {
       if (streamedSequence?.status !== "invalid") streamedSequence = { status: "invalid", reason: "every part of a sequence must be a readable signed record" };
+      held.push(null);
     } else {
       if (previous && streamedSequence?.status !== "invalid") {
         const pair = checkPackSequence([previous, pack]);
@@ -3278,7 +3465,21 @@ async function main(argv) {
           streamedSequence = pair;
         }
       }
+      const readable = result.format === undefined && result.chain?.joins;
+      const differs = readable && streamedSequence?.status !== "invalid" ? ledger(pack) : null;
+      if (differs) streamedSequence = differs;
+      if (readable) shared.add(held.length, result.chain.joins);
+      held.push(readable ? { path: packPath, extent: packExtent(result), digest } : null);
       previous = pack;
+    }
+  }
+  if (streamed && parts > 1 && streamedSequence?.status !== "invalid") {
+    const far = await compareFarParts(held, { timestampRoots, requireTimestamps }, new Set(streamedErased.map((e) => e.id)), shared.pairs());
+    if (far.status === "invalid") {
+      streamedSequence = far;
+    } else {
+      streamedNotes.push(...far.notes);
+      streamedErased.push(...far.erased);
     }
   }
   const missing = partsMissing(recordPaths.map((p) => basename(p)));
@@ -3440,39 +3641,71 @@ function timestampLines(ts) {
   return lines;
 }
 
-async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
-  const failed = (message) => {
-    console.error(message);
-    return { code: 2, entry: { pack: packPath, error: message } };
-  };
+async function inflateRawNode(raw, limit) {
+  try {
+    return new Uint8Array(inflateRawSync(raw, { maxOutputLength: Math.max(1, limit ?? 52428800) }));
+  } catch (err) {
+    throw new ZipError("deflate", `a compressed entry is corrupt and cannot be decompressed: ${err.message}`);
+  }
+}
 
+// Reads and checks one file as a signed or access record, printing nothing. The digest of its bytes tells a part read
+// again (2.23.0) from a file that changed on disk since it was checked.
+async function readRecord(packPath, options) {
   let bytes;
   try {
     bytes = new Uint8Array(await readFile(packPath));
   } catch (err) {
-    return failed(`cannot read ${packPath}: ${err.message}`);
+    return { error: `cannot read ${packPath}: ${err.message}` };
   }
-
-  const inflateRaw = async (raw, limit) => {
-    try {
-      return new Uint8Array(inflateRawSync(raw, { maxOutputLength: Math.max(1, limit ?? 52428800) }));
-    } catch (err) {
-      throw new ZipError("deflate", `a compressed entry is corrupt and cannot be decompressed: ${err.message}`);
-    }
-  };
-
-  let result;
-  let kind;
   try {
-    kind = await detectPackKind(bytes, inflateRaw);
-    result = kind === "dsr"
-      ? await verifyDsrAccessPackBytes(bytes, inflateRaw)
-      : await verifyEvidencePackBytes(bytes, inflateRaw, options);
+    const kind = await detectPackKind(bytes, inflateRawNode);
+    const result = kind === "dsr"
+      ? await verifyDsrAccessPackBytes(bytes, inflateRawNode)
+      : await verifyEvidencePackBytes(bytes, inflateRawNode, options);
+    return { kind, result, digest: await sha256Hex(bytes) };
   } catch (err) {
-
     const detail = err instanceof ZipError ? err.message : `unexpected error: ${err.message}`;
-    return failed(`cannot read ${packPath} as a Mandate record: ${detail}`);
+    return { error: `cannot read ${packPath} as a Mandate record: ${detail}` };
   }
+}
+
+async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
+  const read = await readRecord(packPath, options);
+  if (read.error) {
+    console.error(read.error);
+    return { code: 2, entry: { pack: packPath, error: read.error } };
+  }
+  return { ...reportRecord(packPath, read.kind, read.result, expectFingerprints, asJson), digest: read.digest };
+}
+
+// 2.23.0: two parts of a folder that are not neighbours but whose times overlap, or that hold one record or decision, are
+// read again, a pair at a time, and compared as neighbours are, so a folder still needs the memory of two parts beside
+// its change-trail entries and the ids of its records and decisions. A part whose file changed since it was checked fails
+// the sequence, since the comparison would not be of the file checked.
+async function compareFarParts(held, options, noted, shared) {
+  const notes = [];
+  const erased = [];
+  const readAgain = async (h) => {
+    const read = await readRecord(h.path, options);
+    if (read.error) return { failed: `${read.error}, when read again to compare it` };
+    return read.digest === h.digest ? { name: h.path, result: read.result } : { failed: `${h.path} changed while the folder was being checked` };
+  };
+  let first = null;
+  for (const [i, j] of farPairs(held.map((h) => h?.extent ?? null), shared)) {
+    if (first?.index !== i) first = { index: i, pack: await readAgain(held[i]) };
+    const second = await readAgain(held[j]);
+    const failed = first.pack.failed ?? second.failed;
+    if (failed) return { status: "invalid", reason: failed };
+    const compared = compareOverlapping(first.pack, second, noted);
+    if (compared.status === "invalid") return compared;
+    notes.push(...compared.notes);
+    erased.push(...compared.erased);
+  }
+  return { status: "valid", notes, erased };
+}
+
+function reportRecord(packPath, kind, result, expectFingerprints, asJson) {
   const checkpoints = result.checkpoints ?? [];
 
   const expected = expectFingerprints;
