@@ -1,24 +1,32 @@
 # Changelog
 
-## 2.21.1 (2026-11-20)
+## 2.22.0 (2026-11-20)
 
-The first release here since 2.6.0. Versions 2.7.0 to 2.21.0 were not released in this repository; each has its own entry below, and this release carries all of them.
+The first release here since 2.6.0. Versions 2.7.0 to 2.21.1 were not released in this repository; each has its own entry below, and this release carries all of them.
+
+Stricter
+- Two exports whose copies of one change-trail entry differ on who acted are INVALID, including when one copy names no one. Until 2.21.1 a copy that named no one was let through with a note, so a later export could drop who acted on an entry an earlier export's sealed record names, for example in an export whose records file holds part of its period. The reason names the entry, the export that names no one, and which export carries the entry's sealed record.
+- Every copy of an entry in one export is compared with every copy in the other, in `mutations/policy-trail.json`, the register, `chain/erasures.json` and `assessments/final-decisions.json`, whichever lists they are in.
+- A copy whose own export does not carry its sealed record must match the record the other export carries, and two exports that seal one entry by different records disagree.
+- One export whose `chain/links.json` seals an entry by two records is INVALID: Mandate seals an entry once.
+
+Repository
+- `test/vectors/checkpoint-timestamp-v1.vector.json` is new: a real RFC 3161 token from DigiCert's public timestamp service over the checkpoint of `checkpoint-signed-payload-v1.vector.json`.
+- `test/check.mjs` carries every case added from 2.7.0 to 2.22.0, in sections numbered 1 to 7, each label naming the release that first carried its check. Four options write synthetic records signed with the test key (`--write-joined-pair`, `--write-final-decisions`, `--write-sign-off`, `--write-earlier-layout`), so an earlier checker can be run on the same files.
+- The three sample records were exported again. Each carries an assessment, a review of one of its findings and an artifact version, and every checkpoint carries an outside timestamp. Same sample signing key; the published fingerprint is unchanged.
+- README, SECURITY.md and `docs/evidence-pack-format.md` updated for everything since 2.6.0. The README defines the terms the output uses, and the docs call the tool the checker.
+
+## 2.21.1 (2026-11-20)
 
 Wording
 - Every line a reader sees, in the script and on the verify page, calls the tool the checker. Reasons that called a record a pack, a period a window, or an erased record removed use one word each: record, period, erased. The header line `Generated` reads `Made`, and the records line counts change records.
-- When two exports hold one change-trail entry and only one copy names who acted, the note said the account was removed between the exports, which the checker cannot know. It now says which export names who acted and which carries the entry's sealed record, and what was therefore not checked. What is compared is unchanged.
+- When two exports hold one change-trail entry and only one copy names who acted, the note said the account was removed between the exports, which the checker cannot know. It now says which export names who acted and which carries the entry's sealed record, and what was therefore not checked. What is compared is unchanged. 2.22.0 fails such a pair instead.
 - A record whose key alone was not named reads `RESULT: INVALID (a signing key is not one you named)`, and each `[FAIL]` line names the key. The usage text explains the `[ ok ]`, `[FAIL]`, `[MISS]`, `[ -- ]` and `[ ?? ]` tags, and states the five-minute tolerance for stamps out of order.
 - The reason given when the order of the timestamps cannot be checked no longer names `--timestamp-root`, which the page cannot take; the command line names it on its own checkpoint lines. When the record carries no imports/ files, the line on other AI tools says so instead of claiming a match.
 
 Verify page
 - A record whose timestamp order could not be checked is no longer shown as verified: the page says the order could not be checked, as the script says NOT VERIFIED.
 - With a fingerprint pasted, a record, checkpoint or part signed by another key is said to be signed by a key that does not match it, instead of asking for a fingerprint again.
-
-Repository
-- `test/vectors/checkpoint-timestamp-v1.vector.json` is new: a real RFC 3161 token from DigiCert's public timestamp service over the checkpoint of `checkpoint-signed-payload-v1.vector.json`.
-- `test/check.mjs` carries every case added from 2.7.0 to 2.21.1, in sections numbered 1 to 7, each label naming the release that first carried its check. Four options write synthetic records signed with the test key (`--write-joined-pair`, `--write-final-decisions`, `--write-sign-off`, `--write-earlier-layout`), so an earlier checker can be run on the same files.
-- The three sample records were exported again. Each carries an assessment, a review of one of its findings and an artifact version, and every checkpoint carries an outside timestamp. Same sample signing key; the published fingerprint is unchanged.
-- README, SECURITY.md and `docs/evidence-pack-format.md` updated for everything since 2.6.0. The README defines the terms the output uses, and the docs call the tool the checker.
 
 ## 2.21.0 (2026-11-20)
 

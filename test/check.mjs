@@ -78,6 +78,11 @@
  *               2.21.1: no line a reader sees calls the tool the verifier; when one copy of a change-trail entry names
  *               who acted and the other does not, the note says which export names who acted and which carries the
  *               entry's sealed record, and gives no reason the checker could not check.
+ *               2.22.0: two copies of a change-trail entry, in the trail, the register, chain/erasures.json or the final
+ *               decisions, must agree on who acted: a later export cut to start after the entry's sealed record and
+ *               rewritten to name no one fails beside the earlier export, in either order, and so does a copy whose own
+ *               seal names no one, or an untied copy that does not match the other export's sealed record; one export
+ *               whose records seal an entry twice fails alone, and so do two that seal it by different records.
  *   4. FINAL DECISIONS (2.16.0) - each batch's record hashes to the record its change-trail entry seals, that entry
  *               ties to its change record like any other, and each decision's salted digest is one its batch lists,
  *               every listed digest carried once; a decision's document, salt or digest changed, one left out or
@@ -760,6 +765,11 @@ async function buildSyntheticPack(tweak = {}) {
       { kind: "keywords", ruleId: "client-names", reason: "Names a client", added: ["Marie Tremblay", "Harrowgate Logistics"], removed: ["Old Client"] },
       changes[1].transition.changes[1]] } };
   }
+  // 2.22.0: the first entry sealed naming no one, as a seal fixes an actor that no longer resolved when it was sealed.
+  if (tweak.sealedGone) {
+    const { actorId, actorDisplay, actorSalt, ...rest } = changes[0];
+    changes[0] = { ...rest, actorType: "mandate_support" };
+  }
   // 2.14.0: the last record a test-set prompt, chained as its own kind and in no register of decisions.
   const lastDecision = tweak.testPrompt ? "test" : "allow";
   const r1 = v1Record(ids[0], new Uint8Array(32), at[0]);
@@ -802,6 +812,9 @@ async function buildSyntheticPack(tweak = {}) {
   // 2.9.0: the policy change's change record erased under the retention setting, its entry gone from the trail with it.
   if (tweak.eraseC2) links[4] = { id: changeIds[1], occurredAt: changeAt[1], deletedRecordSha256: bytesToHex(sha(c2)), erasedBy: SYN_ERASURE_LATER };
   if (tweak.dropLast) links = links.slice(0, 5);
+  // 2.22.0: a records file cut so it starts after the first change record, as one capped at its size or at the register's
+  // rows starts at a later sealed window; its register then holds only the decisions it ties.
+  if (tweak.partialFromR3) links = links.slice(3);
   const sealedCount = tweak.dropLast ? 5 : sealed.length;
   const sealedRoot = tweak.dropLast ? await merkleRootNode(sealed.slice(0, 5)) : root;
   const cpTenant = tweak.otherWorkspaceCheckpoint ? SYN_OTHER_WORKSPACE : tenantId;
@@ -847,6 +860,7 @@ async function buildSyntheticPack(tweak = {}) {
       provider: "openai", model: "gpt-4o", policyVersionId: SYN_POLICY_VERSION, recordSha256: bytesToHex(sha(r4)) },
   ];
   if (tweak.dropLast || tweak.eraseR4 || tweak.testPrompt) decisions.pop();
+  if (tweak.partialFromR3) decisions.shift();
   if (tweak.trailEdit) changes[0] = { ...changes[0], actorDisplay: "someone.else@workspace.example", mutationReason: "Approved by phone." };
   if (tweak.listCount || tweak.listNames || tweak.listExtra) {
     const [list, ...rest] = changes[1].transition.changes;
@@ -2174,10 +2188,17 @@ for (const [label, tweak, expect] of [
     const earlierBeside = cli(earlier, following, gapAfter, "--expect-fingerprint", fp);
     ok("2.21.0: script, a part made before checker 2.7.0 beside two parts with a gap between them -> exit 1, the gap still found",
       earlierBeside.code === 1 && /^SEQUENCE: INVALID \(.*their periods leave a gap between them\)$/m.test(earlierBeside.out), earlierBeside.out.slice(-500));
+    // 2.22.0: the script itself, given an earlier export and a later one that dropped who acted on a sealed entry.
+    const dropped = await save("dropped-later.zip", { generatedAt: "2026-01-15T13:00:00.0000000+00:00", trailGone: true, partialFromR3: true,
+      chainTruncated: true, manifestTruncated: true });
+    const droppedRun = cli(one, dropped, "--expect-fingerprint", fp);
+    ok("2.22.0: script, a later export that dropped who acted on an entry the earlier one seals -> exit 1, SEQUENCE INVALID naming the entry and the export",
+      droppedRun.code === 1 && /^SEQUENCE: INVALID \(the records disagree: change-trail entry dddddddd-0000-4000-8000-000000000001 \(held_decision\.denied\), listed in mutations\/policy-trail\.json, names who acted in .*a\.zip but not in .*dropped-later\.zip; .*a\.zip carries the entry's sealed record, and .*a\.zip's copy of the entry matches it\)$/m.test(droppedRun.out)
+        && /^OVERALL: INVALID \(/m.test(droppedRun.out), droppedRun.out.slice(-700));
     ok("2.21.1: the usage and every line of a run call the tool the checker, never the verifier",
       !/verifier/i.test(help) && [unchecked, named, otherFormat, exportAlone, earlierRun, cpLater].every((run) => !/verifier/i.test(run.out)),
       [help, unchecked.out, named.out, otherFormat.out, exportAlone.out, earlierRun.out, cpLater.out].join("\n").split("\n").filter((l) => /verifier/i.test(l)).join(" | "));
-    ok("script --version reports 2.21.1", /^mandate-verify 2\.21\.1 /.test(cli("--version").out));
+    ok("script --version reports 2.22.0", /^mandate-verify 2\.22\.0 /.test(cli("--version").out));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2350,25 +2371,95 @@ for (const [label, tweak, expect] of [
   const later = "2026-01-15T13:00:00.0000000+00:00";
   const salted = await pack({ untied: "salted" });
   const gonePair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "gone" }) }]);
-  ok("2.21.1: an entry named in one export and not in the other, sealed in neither -> joins, and the note says what was not checked",
-    gonePair.status === "valid" && gonePair.notes.includes("change-trail entry dddddddd-0000-4000-8000-000000000003 (policy.update) names who acted in a "
-      + "but not in b; neither export carries the entry's sealed record, so neither copy was checked")
-      && !gonePair.notes.some((n) => /removed|account/.test(n)), JSON.stringify(gonePair));
-  // An entry the earlier export carries the sealed record of, and the later export carries without it, as an export
-  // whose records file holds only part of its period can: the later copy no longer naming who acted is let through
-  // with a note, and the note says the earlier export's sealed record names who acted.
-  const sealedFirst = await pack({});
-  const unsealedLater = await pack({ generatedAt: later });
+  ok("2.22.0: an entry named in one export and not in the other, sealed in neither -> INVALID, the export that dropped the name named",
+    gonePair.status === "invalid" && gonePair.kind === "changed" && gonePair.fields.join() === "who acted"
+      && gonePair.detail === "change-trail entry dddddddd-0000-4000-8000-000000000003 (policy.update), listed in mutations/policy-trail.json, names who acted in a "
+        + "but not in b; neither export carries the entry's sealed record", JSON.stringify(gonePair));
+  // 2.22.0: a later export whose records file starts after the entry's sealed record, as one cut at its size or its
+  // register's rows does, with the entry's copy rewritten to name no one, while the earlier export's sealed record names
+  // who acted. The later export passes alone; with the earlier one, the name taken out is found.
   const firstEntry = "dddddddd-0000-4000-8000-000000000001";
-  const laterJoins = { ...unsealedLater.chain.joins, changeLinks: new Map(), trail: new Map(unsealedLater.chain.joins.trail) };
-  const { actorId: _id, actorDisplay: _name, actorSalt: _salt, ...unnamedRow } = laterJoins.trail.get(firstEntry).row;
-  laterJoins.trail.set(firstEntry, { ...laterJoins.trail.get(firstEntry), row: { ...unnamedRow, actorType: "mandate_support" } });
-  const laterChain = Object.defineProperty({ ...unsealedLater.chain }, "joins", { value: laterJoins });
-  const sealedPair = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "b", result: { ...unsealedLater, chain: laterChain } }]);
-  ok("2.21.1: an entry sealed in the earlier export and no longer named, unsealed, in the later one -> the note says the earlier sealed record names who acted",
-    sealedFirst.chain.joins.changeLinks.has(firstEntry) && sealedPair.status === "valid" && sealedPair.notes.includes(
-      `change-trail entry ${firstEntry} (held_decision.denied) names who acted in a but not in b; `
-      + "a carries the entry's sealed record and its copy matches it, while b does not carry it, so the copy there was not checked"), JSON.stringify(sealedPair));
+  const sealedFirst = await pack({});
+  const droppedLater = await pack({ generatedAt: later, trailGone: true, partialFromR3: true, chainTruncated: true, manifestTruncated: true });
+  ok("2.22.0: a later export cut to start after an entry's sealed record, the entry rewritten to name no one -> valid alone",
+    droppedLater.overall === "valid" && !droppedLater.chain.joins.changeLinks.has(firstEntry) && droppedLater.chain.truncated === true,
+    JSON.stringify({ o: droppedLater.overall, c: droppedLater.chain?.reason }));
+  const droppedPair = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "b", result: droppedLater }]);
+  ok("2.22.0: ... and after an export whose sealed record names who acted -> INVALID, the entry and the export that dropped the name named",
+    droppedPair.status === "invalid" && droppedPair.kind === "changed" && droppedPair.id === firstEntry && droppedPair.fields.join() === "who acted"
+      && droppedPair.detail === `change-trail entry ${firstEntry} (held_decision.denied), listed in mutations/policy-trail.json, names who acted in a but not in b; `
+        + "a carries the entry's sealed record, and a's copy of the entry matches it", JSON.stringify(droppedPair));
+  const droppedReversed = checkPackSequence([{ name: "b", result: droppedLater }, { name: "a", result: sealedFirst }]);
+  ok("2.22.0: ... given in the other order -> the same failure", droppedReversed.status === "invalid" && droppedReversed.kind === "changed"
+    && / names who acted in a but not in b; a carries the entry's sealed record, and a's copy of the entry matches it$/.test(droppedReversed.detail ?? ""), JSON.stringify(droppedReversed));
+  // 2.22.0: a seal naming no one proves nothing, since an entry can be sealed again after its seal row was removed: a later
+  // export sealed that way still fails against an earlier export that names who acted, and one export that carries both
+  // seals of one entry fails alone.
+  const resealed = await pack({ generatedAt: later, sealedGone: true });
+  const firstChange = "bbbbbbbb-0000-4000-8000-000000000001";
+  const without = (map) => new Map([...map].filter(([k]) => k !== firstChange));
+  const earlierUnsealed = { ...sealedFirst, identity: { ...sealedFirst.identity, generatedAt: "2026-01-15T11:15:10.0000000+00:00" },
+    chain: Object.defineProperty({ ...sealedFirst.chain }, "joins", { value: { ...sealedFirst.chain.joins, changeLinks: new Map(),
+      byId: without(sealedFirst.chain.joins.byId), atById: without(sealedFirst.chain.joins.atById), live: without(sealedFirst.chain.joins.live) } }) };
+  const resealedPair = checkPackSequence([{ name: "a", result: earlierUnsealed }, { name: "b", result: resealed }]);
+  ok("2.22.0: an earlier export naming who acted and a later one whose own seal names no one -> INVALID, never accepted",
+    resealed.overall === "valid" && resealedPair.status === "invalid" && resealedPair.kind === "changed" && resealedPair.fields.join() === "who acted"
+      && resealedPair.detail === `change-trail entry ${firstEntry} (held_decision.denied), listed in mutations/policy-trail.json, names who acted in a but not in b; `
+        + "only b carries the entry's sealed record",
+    JSON.stringify(resealedPair));
+  const twice = await verifyEvidencePackBytes(writeZip(await (async () => {
+    const { entries } = await buildSyntheticPack({});
+    const chainFile = entries.find((e) => e.name === "chain/links.json");
+    const chain = JSON.parse(new TextDecoder().decode(chainFile.data));
+    const again = changeRecord("bbbbbbbb-0000-4000-8000-0000000000ee", sha(Buffer.from(chain.links.at(-1).record, "base64")), "2026-01-15T11:50:00.0000000Z",
+      firstEntry, new Uint8Array(32));
+    chain.links.push({ id: "bbbbbbbb-0000-4000-8000-0000000000ee", occurredAt: "2026-01-15T11:50:00.0000000Z", record: Buffer.from(again).toString("base64") });
+    chainFile.data = new TextEncoder().encode(JSON.stringify(chain));
+    return entries;
+  })()), inflateRaw);
+  ok("2.22.0: one export whose records seal an entry twice -> INVALID, though only the records file was read for it",
+    twice.overall === "invalid" && /^change-trail entry dddddddd-0000-4000-8000-000000000001 is sealed by two records in chain\/links\.json \(bbbbbbbb-0000-4000-8000-000000000001 and bbbbbbbb-0000-4000-8000-0000000000ee\); Mandate seals an entry once$/.test(twice.chain?.reason ?? ""),
+    JSON.stringify(twice.chain?.reason));
+  // 2.22.0: an erasure entry is a change-trail entry too: its copy in chain/erasures.json is held to the same rule.
+  const erasedEarly = await pack({ generatedAt: later });
+  const erasureJoins = { ...erasedEarly.chain.joins, erasureEntries: new Map(erasedEarly.chain.joins.erasureEntries) };
+  const erasureEntry = "e1e1e1e1-0000-4000-8000-000000000001";
+  const { actorId: _eid, actorDisplay: _ename, actorSalt: _esalt, ...erasureRest } = erasureJoins.erasureEntries.get(erasureEntry).row;
+  erasureJoins.erasureEntries.set(erasureEntry, { ...erasureJoins.erasureEntries.get(erasureEntry), row: { ...erasureRest, actorType: "mandate_support" } });
+  const erasurePair = checkPackSequence([{ name: "a", result: sealedFirst },
+    { name: "b", result: { ...erasedEarly, chain: Object.defineProperty({ ...erasedEarly.chain }, "joins", { value: erasureJoins }) } }]);
+  ok("2.22.0: an erasure entry named in one export's chain/erasures.json and not in the other's -> INVALID",
+    erasurePair.status === "invalid" && erasurePair.kind === "changed" && erasurePair.id === erasureEntry
+      && erasurePair.detail === `change-trail entry ${erasureEntry} (dsr.delete), listed in chain/erasures.json, names who acted in a but not in b; `
+        + "neither export carries the entry's sealed record", JSON.stringify(erasurePair));
+  // 2.22.0: an export that carries an entry's sealed record but not its copy (its trail and register cut at their rows)
+  // still binds the other export's copy, which must match that record; and two exports that seal one entry by two
+  // different records disagree.
+  const recordOnly = { ...sealedFirst, chain: Object.defineProperty({ ...sealedFirst.chain }, "joins", { value: { ...sealedFirst.chain.joins,
+    trail: new Map([...sealedFirst.chain.joins.trail].filter(([k]) => k !== firstEntry)),
+    registerChanges: new Map([...sealedFirst.chain.joins.registerChanges].filter(([k]) => k !== firstEntry)) } }) };
+  const recordOnlyPair = checkPackSequence([{ name: "a", result: recordOnly }, { name: "b", result: droppedLater }]);
+  ok("2.22.0: an export carrying only the sealed record, the other an untied copy rewritten to name no one -> INVALID, the copy against the record",
+    droppedLater.chain.joins.untiedSeals.has(firstEntry) && recordOnlyPair.status === "invalid" && recordOnlyPair.fields.join() === "sealed record"
+      && recordOnlyPair.detail === `change-trail entry ${firstEntry} (held_decision.denied) in b differs from the entry's sealed record, which a carries`, JSON.stringify(recordOnlyPair));
+  const otherRecord = { ...sealedFirst, chain: Object.defineProperty({ ...sealedFirst.chain }, "joins", { value: { ...sealedFirst.chain.joins,
+    changeLinks: new Map([...sealedFirst.chain.joins.changeLinks].map(([k, v]) => [k, k === firstEntry ? "bbbbbbbb-0000-4000-8000-0000000000ee" : v])) } }) };
+  const twoRecords = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "b", result: otherRecord }]);
+  ok("2.22.0: two exports that seal one entry by different records -> INVALID",
+    twoRecords.status === "invalid" && twoRecords.fields.join() === "sealed record"
+      && twoRecords.detail === `change-trail entry ${firstEntry} is sealed by record ${firstChange} in a and by record bbbbbbbb-0000-4000-8000-0000000000ee in b; Mandate seals an entry once`,
+    JSON.stringify(twoRecords));
+  // 2.22.0: one export may carry an entry in its trail and the other only in chain/erasures.json; the copies are still
+  // compared.
+  const crossJoins = { ...droppedLater.chain.joins, trail: new Map([...droppedLater.chain.joins.trail].filter(([k]) => k !== firstEntry)),
+    registerChanges: new Map([...droppedLater.chain.joins.registerChanges].filter(([k]) => k !== firstEntry)),
+    erasureEntries: new Map([...droppedLater.chain.joins.erasureEntries, [firstEntry, droppedLater.chain.joins.trail.get(firstEntry)]]) };
+  const crossPair = checkPackSequence([{ name: "a", result: sealedFirst },
+    { name: "b", result: { ...droppedLater, chain: Object.defineProperty({ ...droppedLater.chain }, "joins", { value: crossJoins }) } }]);
+  ok("2.22.0: an entry in one export's trail and only in the other's chain/erasures.json, named in one -> INVALID, both lists named",
+    crossPair.status === "invalid" && crossPair.kind === "changed" && crossPair.detail === `change-trail entry ${firstEntry} (held_decision.denied), listed in `
+      + "a's mutations/policy-trail.json and b's chain/erasures.json, names who acted in a but not in b; a carries the entry's sealed record, and a's copy of the entry matches it",
+    JSON.stringify(crossPair));
   const queuedPair = checkPackSequence([{ name: "a", result: await pack({ untied: "named" }) }, { name: "b", result: await pack({ generatedAt: later, untied: "salted" }) }]);
   ok("2.6.0: an entry exported while queued, then with the salt of its seal -> joins", queuedPair.status === "valid", JSON.stringify(queuedPair));
   const otherPair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "other" }) }]);

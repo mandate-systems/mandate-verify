@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-const TOOL_VERSION = "2.21.1";
+const TOOL_VERSION = "2.22.0";
 
 const VERIFIER_CORE_BEGIN = "VERIFIER-CORE-BEGIN v2";
 
@@ -2027,9 +2027,21 @@ async function walkChainFiles(fileBytes, expect) {
   }
 
   const changeRecords = new Map();
+  const changeRecordIds = new Map();
   for (const l of links) {
-    if (l.record && recordText(l.record.policy_decision) === "change") changeRecords.set(recordUuid(l.record.correlation_id), l.record);
+    if (!l.record || recordText(l.record.policy_decision) !== "change") continue;
+    const entryId = recordUuid(l.record.correlation_id);
+    // 2.22.0: Mandate seals an entry once, so a second record for it is the entry sealed again, perhaps naming someone else.
+    if (changeRecords.has(entryId)) {
+      return invalid(`change-trail entry ${entryId} is sealed by two records in chain/links.json (${changeRecordIds.get(entryId)} and ${l.id}); `
+        + "Mandate seals an entry once");
+    }
+    changeRecords.set(entryId, l.record);
+    changeRecordIds.set(entryId, l.id);
   }
+  // 2.22.0: the seal of each copy whose sealed record this export does not carry, so another export that carries it can
+  // tie the copy to it. A copy that names who acted without the salt of the name cannot be sealed here and is left out.
+  const untiedSeals = new Map();
   const erasureFile = read("chain/erasures.json");
   const erasureEntries = Array.isArray(erasureFile?.entries) ? erasureFile.entries : [];
   const finalDecisionsFile = read(FINAL_DECISIONS_FILE);
@@ -2074,6 +2086,8 @@ async function walkChainFiles(fileBytes, expect) {
       }
       if (!sealed) {
         changesNotTiedIds.add(id);
+        const seal = await changeTrailEntrySeal(row, expect.tenantId).then((d) => bytesToHex(d), () => null);
+        if (seal !== null) untiedSeals.set(id, [...(untiedSeals.get(id) ?? []), seal]);
         continue;
       }
       let digest;
@@ -2292,6 +2306,10 @@ async function walkChainFiles(fileBytes, expect) {
       changeLinks: new Map(links.filter((l) => l.record && recordText(l.record.policy_decision) === "change")
         .map((l) => [recordUuid(l.record.correlation_id), l.id])),
       registerChanges: changeRowsById((read("register/decisions.json") ?? []).filter((row) => row?.source === "mutation")),
+      erasureEntries: changeRowsById(erasureEntries),
+      finalDecisionEntries: changeRowsById(finalDecisionBatches(finalDecisionsFile).map((b) => b?.entry)),
+      sealHashes: new Map([...changeRecords].map(([entryId, r]) => [entryId, bytesToHex(r.request_body_hash)])),
+      untiedSeals,
       register: registerDecisions(read("register/decisions.json")),
     },
   });
@@ -2318,7 +2336,7 @@ function changeRowDifference(p, q) {
   const words = { actorType: "who acted", actorId: "who acted", actorDisplay: "who acted", mutationReason: "reason", occurredAt: "time", action: "action" };
   const fields = new Set();
   for (const key of new Set([...Object.keys(p), ...Object.keys(q)])) {
-    if (key === "actorSalt" || (gone && words[key] === "who acted")) continue;
+    if (key === "actorSalt") continue;
     const same = key === "occurredAt" && instantTicks(p[key]) !== null
       ? instantTicks(p[key]) === instantTicks(q[key])
       : canonicalJson(p[key]) === canonicalJson(q[key]);
@@ -2388,18 +2406,17 @@ function registerRowDifference(p, q, shownA, shownB) {
   return { fields: [...fields].sort(), renamed };
 }
 
-// 2.21.1: when one copy of an entry names who acted and the other does not, only a copy whose export carries the entry's
-// sealed record was checked against it, so the note says which export names who acted and which carries the sealed
-// record, and nothing it could not check, such as why the name is gone.
-function unnamedNote(id, action, unnamed, unnamedJoins, named, namedJoins) {
-  const sealedIn = (j) => j.changeLinks.has(id);
-  // Both cannot carry it: one sealed record cannot match a copy that names who acted and one that does not.
-  const sealed = sealedIn(namedJoins)
-    ? `${named.name} carries the entry's sealed record and its copy matches it, while ${unnamed.name} does not carry it, so the copy there was not checked`
-    : sealedIn(unnamedJoins)
-      ? `${unnamed.name} carries the entry's sealed record and its copy, which names no one, matches it, while ${named.name} does not carry it, so the name there was not checked`
-      : "neither export carries the entry's sealed record, so neither copy was checked";
-  return `change-trail entry ${id} (${action}) names who acted in ${named.name} but not in ${unnamed.name}; ${sealed}`;
+// 2.22.0: once an entry is sealed, every export prints who acted as the seal fixed it, whether or not it carries the
+// sealed record, and an erasure or the retention setting never changes that, so two copies of one entry never differ on
+// who acted. No copy that names no one is accepted: a seal that names no one proves nothing, since a seal can be deleted
+// and the entry sealed again by an account that no longer resolves. The reason says which export dropped the name.
+function unnamedFailure(id, action, file, unnamed, unnamedJoins, named, namedJoins, others) {
+  const said = `change-trail entry ${id} (${action}), listed in ${file}, names who acted in ${named.name} but not in ${unnamed.name}`;
+  const sealed = namedJoins.changeLinks.has(id)
+    ? `${named.name} carries the entry's sealed record, and ${named.name}'s copy of the entry matches it`
+    : unnamedJoins.changeLinks.has(id) ? `only ${unnamed.name} carries the entry's sealed record` : "neither export carries the entry's sealed record";
+  return `${said}; ${sealed}`
+    + `${others.length > 0 ? `; the copies also differ in their ${others.join(", ")}` : ""}`;
 }
 
 function comparePacks(a, b) {
@@ -2458,19 +2475,51 @@ function comparePacks(a, b) {
       return { kind: "changed", id, subject: subjectOf(id), fields: ["sealed record"], detail: `${subjectOf(id)} ${id} reads differently in ${second.name} than in ${first.name}: its sealed record` };
     }
   }
-  for (const [file, key, partialFlag] of [["mutations/policy-trail.json", "trail", "mutationsTruncated"], ["register/decisions.json", "registerChanges", "truncated"]]) {
-    for (const [id, entry] of ja[key]) {
-      const other = jb[key].get(id);
-      if (!other) continue;
-      const diff = changeRowDifference(entry.row, other.row);
-      if (diff.fields.length > 0) {
+  // 2.22.0: the erasure entries and the final decisions' entries are change-trail entries too, and one export may carry an
+  // entry in one list while the other carries it in another, so every copy in one is held to every copy in the other.
+  const copies = (j) => {
+    const all = new Map();
+    for (const [file, key] of [["mutations/policy-trail.json", "trail"], ["register/decisions.json", "registerChanges"], ["chain/erasures.json", "erasureEntries"],
+      [FINAL_DECISIONS_FILE, "finalDecisionEntries"]]) {
+      for (const [id, entry] of j[key] ?? []) all.set(id, [...(all.get(id) ?? []), { file, row: entry.row }]);
+    }
+    return all;
+  };
+  const copiesB = copies(jb);
+  for (const [id, inA] of copies(ja)) {
+    for (const ca of inA) {
+      for (const cb of copiesB.get(id) ?? []) {
+        const diff = changeRowDifference(ca.row, cb.row);
+        if (diff.fields.length === 0) continue;
+        const file = ca.file === cb.file ? ca.file : `${a.name}'s ${ca.file} and ${b.name}'s ${cb.file}`;
         return {
           kind: "changed", id, subject: "change-trail entry", fields: diff.fields,
-          detail: `change-trail entry ${id} (${entry.row.action}) in ${file} reads differently in ${second.name} than in ${first.name}: its ${diff.fields.join(", ")}`,
+          detail: diff.gone
+            ? unnamedFailure(id, ca.row.action, file, ...(diff.gone === 1 ? [a, ja, b, jb] : [b, jb, a, ja]), diff.fields.filter((f) => f !== "who acted"))
+            : `change-trail entry ${id} (${ca.row.action}) in ${file} reads differently in ${second.name} than in ${first.name}: its ${diff.fields.join(", ")}`,
         };
       }
-      if (diff.gone) notes.push(unnamedNote(id, entry.row.action, ...(diff.gone === 1 ? [a, ja, b, jb] : [b, jb, a, ja])));
     }
+  }
+  // 2.22.0: one entry is sealed by one record, so two exports that seal it by different records disagree; and a copy whose
+  // own export does not carry its sealed record must still match the record the other export carries.
+  const copiesOf = new Map([[ja, copies(ja)], [jb, copiesB]]);
+  for (const [x, jx, y, jy] of sides) {
+    const copiesY = copiesOf.get(jy);
+    for (const [id, seal] of jx.sealHashes ?? []) {
+      const otherRecord = jy.changeLinks.get(id);
+      if (otherRecord !== undefined && otherRecord !== jx.changeLinks.get(id)) {
+        return { kind: "changed", id, subject: "change-trail entry", fields: ["sealed record"],
+          detail: `change-trail entry ${id} is sealed by record ${jx.changeLinks.get(id)} in ${x.name} and by record ${otherRecord} in ${y.name}; Mandate seals an entry once` };
+      }
+      if ((jy.untiedSeals?.get(id) ?? []).some((other) => other !== seal)) {
+        const action = (copiesY.get(id) ?? [])[0]?.row.action;
+        return { kind: "changed", id, subject: "change-trail entry", fields: ["sealed record"],
+          detail: `change-trail entry ${id} (${action}) in ${y.name} differs from the entry's sealed record, which ${x.name} carries` };
+      }
+    }
+  }
+  for (const [file, key, partialFlag] of [["mutations/policy-trail.json", "trail", "mutationsTruncated"], ["register/decisions.json", "registerChanges", "truncated"]]) {
     for (const [x, jx, y, jy] of sides) {
       const cover = packSpan(y, Boolean(y.result[partialFlag]), [...jy[key].values()].map((e) => e.at));
       if (cover === null) continue;
