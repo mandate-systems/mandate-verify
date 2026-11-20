@@ -68,7 +68,7 @@ A record made before its period ended is valid and in progress: the result reads
 
 ## Several records
 
-Give the script several files, or a folder (every `.zip` in it, in name order), and it checks each one and then checks them together: the parts of one long export, or an earlier and a later export. They must have one Mandate ID, be signed by one key or by keys you named, leave no gap between their periods, and each continue from the one before. No record or change-trail entry that one holds inside the time the other covers may be missing from the other or read differently there. Each export is held to its period up to a minute before it says it was made, or only to the span its records hold when it says it is partial, and what that leaves out is named, as is any decision erased between the two exports. A part made before its period ended covers it up to a minute before it was made, so the next part must start by then. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.
+Give the script several files, or a folder (every `.zip` in it, in name order), and it checks each one and then checks them together: the parts of one long export, or an earlier and a later export. They must have one Mandate ID, be signed by one key or by keys you named, leave no gap between their periods, and each continue from the one before. No record or change-trail entry that one holds inside the time the other covers may be missing from the other or read differently there, with one exception: when one copy of a change-trail entry names who acted and the other does not, who acted is not compared, and a note says which export names who acted and which carries the entry's sealed record (the format notes, section 7, say what that leaves unchecked). Each export is held to its period up to a minute before it says it was made, or only to the span its records hold when it says it is partial, and what that leaves out is named, as is any decision erased between the two exports. A part made before its period ended covers it up to a minute before it was made, so the next part must start by then. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.
 
 A long period downloads as one archive of parts, a complete export. Unzip it and give the script the folder. The archive itself is not signed, so the script never checks it as a record: given alone, it says what the archive holds and exits 2; left in the folder beside its parts, it is set aside. Parts named `part-K-of-N.zip` must all be there, even when one part is given alone: a missing part is named and the sequence fails.
 
@@ -127,11 +127,11 @@ The tamper matrix covers content flip, injected file, metadata flips on the comp
 
 ## Provenance
 
-The canonical artifact is the file served at `https://mandateco.ca/downloads/mandate-verify.mjs`. This repository mirrors it, and the weekly `mirror` CI job byte-compares the two (plus the verifier core embedded in verify.html). You can run the same comparison yourself with `MIRROR=1`, or just `diff` the downloads. Releases carry a `SHA256SUMS` file; the same hash is published on verify.html, so the site and this repository attest each other.
+The canonical artifact is the file served at `https://mandateco.ca/downloads/mandate-verify.mjs`. This repository mirrors it, and the weekly `mirror` CI job byte-compares the two (plus the checker core embedded in verify.html). You can run the same comparison yourself with `MIRROR=1`, or just `diff` the downloads. Releases carry a `SHA256SUMS` file; the same hash is published on verify.html, so the site and this repository attest each other.
 
 ## Relationship to the product repository
 
-Verifier changes originate in Mandate's product repository, where the payload builders are tested against the implementation that produces real records, and are published here and on the site together. Issues and documentation fixes are welcome in this repository; for changes to verification logic, open an issue first so the change lands through that path rather than diverging the mirror.
+Checker changes originate in Mandate's product repository, where the payload builders are tested against the implementation that produces real records, and are published here and on the site together. Issues and documentation fixes are welcome in this repository; for changes to verification logic, open an issue first so the change lands through that path rather than diverging the mirror.
 
 ## Security
 

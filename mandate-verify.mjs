@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { pathToFileURL } from "node:url";
 
-const TOOL_VERSION = "2.21.0";
+const TOOL_VERSION = "2.21.1";
 
 const VERIFIER_CORE_BEGIN = "VERIFIER-CORE-BEGIN v2";
 
@@ -791,13 +791,15 @@ export function timestampSequence(entries, generatedAtMs, require = false) {
       const t = Date.parse(e.timestamp.time);
       if (gap && gap.absent && !out.problem) {
         out.problem = `checkpoint ${gap.checkpointId} has no outside timestamp, though checkpoint ${e.checkpointId}, which seals later records, has one: `
-          + "Mandate stamps checkpoints in the order of their records, so it was replaced, or its timestamp removed, after the later one was stamped";
+          + "Mandate stamps checkpoints in the order of their records, so this does not happen unless that checkpoint was replaced, or its timestamp "
+          + "removed, after the later one was stamped";
       } else if (gap && !gap.absent && !out.gapUnchecked) {
         out.gapUnchecked = { checkpointId: gap.checkpointId, later: e.checkpointId };
       }
       if (newest && t < newest.t - TIMESTAMP_ORDER_TOLERANCE_MS && !out.problem) {
         out.problem = `checkpoint ${e.checkpointId} was stamped on ${new Date(t).toISOString()}, before checkpoint ${newest.checkpointId}, which seals `
-          + `earlier records, was stamped on ${new Date(newest.t).toISOString()}: a checkpoint stamped after a later one was replaced after the fact`;
+          + `earlier records, was stamped on ${new Date(newest.t).toISOString()}: Mandate stamps checkpoints in the order of their records, so this does not happen unless `
+          + "a checkpoint was replaced after the fact";
       }
       if (!newest || t > newest.t) newest = { t, checkpointId: e.checkpointId };
       out.stamped++;
@@ -822,7 +824,7 @@ export function timestampSequence(entries, generatedAtMs, require = false) {
   // A timestamp this checker cannot check, before one it can: the order cannot be judged without that authority's root.
   if (out.gapUnchecked && !out.problem) {
     out.notVerified = `checkpoint ${out.gapUnchecked.checkpointId} carries a timestamp this checker cannot check, before checkpoint `
-      + `${out.gapUnchecked.later}, which has one it can: name its authority's root with --timestamp-root`;
+      + `${out.gapUnchecked.later}, which has one it can`;
   }
   if (require && !out.problem && !out.notVerified) {
     const waiting = out.absent.filter((a) => !(Number.isFinite(a.lastRecordMs) && Number.isFinite(generatedAtMs)
@@ -864,7 +866,7 @@ export async function verifyCheckpointFileBytes(bytes, options = {}) {
       format: value.schemaVersion,
       signature: {
         status: "unsupported",
-        reason: `this checkpoint is format ${value.schemaVersion}; this verifier reads formats ${READ_CHECKPOINT_SCHEMA_VERSIONS.join(" and ")}. Use the verifier released with the checkpoint, or the latest from mandateco.ca/verify.html`,
+        reason: `this checkpoint is format ${value.schemaVersion}; this checker reads formats ${READ_CHECKPOINT_SCHEMA_VERSIONS.join(" and ")}. Use the checker released with the checkpoint, or the latest from mandateco.ca/verify.html`,
       },
     };
   }
@@ -1100,7 +1102,7 @@ const CANONICAL_FIELDS = (() => {
 
 export function decodeCanonicalRecord(bytes) {
   const fields = CANONICAL_FIELDS[bytes[0]];
-  if (!fields || bytes[1] !== 0) throw new Error(`record layout ${bytes[0]} is not one this verifier reads`);
+  if (!fields || bytes[1] !== 0) throw new Error(`record layout ${bytes[0]} is not one this checker reads`);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let at = 2;
   const take = () => {
@@ -2101,7 +2103,7 @@ async function walkChainFiles(fileBytes, expect) {
   const erasures = new Map();
   for (const l of links) {
     if (l.record) continue;
-    if (!l.erasedBy) return invalid(`record ${l.id} was removed, and no entry records its erasure`);
+    if (!l.erasedBy) return invalid(`record ${l.id} was erased, and no entry records its erasure`);
     const entry = erasureById.get(l.erasedBy);
     if (!entry) return invalid(`record ${l.id} names erasure entry ${l.erasedBy}, which chain/erasures.json does not carry`);
     const reason = ERASURE_REASONS(entry.action);
@@ -2160,6 +2162,7 @@ async function walkChainFiles(fileBytes, expect) {
   // among the rule hits as they were made; a later version is not compared, and the result says why.
   let importsCompared = false;
   let importsNotCompared = "";
+  let importsFeeds = 0;
   if (reportSummary) {
     const byFeed = reportSummary.imported?.byFeed;
     if (!Array.isArray(byFeed) && !before270) return invalid("report/summary.json does not say what other AI tools reported");
@@ -2206,9 +2209,10 @@ async function walkChainFiles(fileBytes, expect) {
       const packed = mix?.imports;
       if ((mix && (!Array.isArray(packed) || byFeed.length !== packed.length || byFeed.some((f, i) => key(f) !== key(packed[i]))))
         || byFeed.length !== carried.length || byFeed.some((f, i) => f?.feed !== carried[i] || !recomputed(f))) {
-        return invalid("report/summary.json: the activity it says other AI tools reported does not match the pack's imports");
+        return invalid("report/summary.json: the activity it says other AI tools reported does not match the record's imports/ files");
       }
       importsCompared = true;
+      importsFeeds = carried.length;
     }
     // Before 2.10.0 the report never said its period was in progress.
     const saysInProgress = reportSummary.period?.inProgress;
@@ -2269,6 +2273,7 @@ async function walkChainFiles(fileBytes, expect) {
     summaryNotCompared,
     importsCompared,
     importsNotCompared,
+    importsFeeds,
     finalDecisions,
     truncated: chain.truncated === true,
   };
@@ -2383,6 +2388,20 @@ function registerRowDifference(p, q, shownA, shownB) {
   return { fields: [...fields].sort(), renamed };
 }
 
+// 2.21.1: when one copy of an entry names who acted and the other does not, only a copy whose export carries the entry's
+// sealed record was checked against it, so the note says which export names who acted and which carries the sealed
+// record, and nothing it could not check, such as why the name is gone.
+function unnamedNote(id, action, unnamed, unnamedJoins, named, namedJoins) {
+  const sealedIn = (j) => j.changeLinks.has(id);
+  // Both cannot carry it: one sealed record cannot match a copy that names who acted and one that does not.
+  const sealed = sealedIn(namedJoins)
+    ? `${named.name} carries the entry's sealed record and its copy matches it, while ${unnamed.name} does not carry it, so the copy there was not checked`
+    : sealedIn(unnamedJoins)
+      ? `${unnamed.name} carries the entry's sealed record and its copy, which names no one, matches it, while ${named.name} does not carry it, so the name there was not checked`
+      : "neither export carries the entry's sealed record, so neither copy was checked";
+  return `change-trail entry ${id} (${action}) names who acted in ${named.name} but not in ${unnamed.name}; ${sealed}`;
+}
+
 function comparePacks(a, b) {
   const ja = a.result.chain.joins;
   const jb = b.result.chain.joins;
@@ -2450,7 +2469,7 @@ function comparePacks(a, b) {
           detail: `change-trail entry ${id} (${entry.row.action}) in ${file} reads differently in ${second.name} than in ${first.name}: its ${diff.fields.join(", ")}`,
         };
       }
-      if (diff.gone) notes.push(`change-trail entry ${id} (${entry.row.action}) no longer names who acted in ${diff.gone === 1 ? a.name : b.name}: the account was removed between the exports`);
+      if (diff.gone) notes.push(unnamedNote(id, entry.row.action, ...(diff.gone === 1 ? [a, ja, b, jb] : [b, jb, a, ja])));
     }
     for (const [x, jx, y, jy] of sides) {
       const cover = packSpan(y, Boolean(y.result[partialFlag]), [...jy[key].values()].map((e) => e.at));
@@ -2507,26 +2526,26 @@ export function checkPackSequence(packs) {
       continue;
     }
     const fail = (kind, detail, extra = {}) => ({ status: "invalid", kind, reason: `${a.name} then ${b.name}: ${detail}`, detail, ...extra });
-    if (!sameMandateId(a.result.identity?.tenantId, b.result.identity?.tenantId)) return fail("mandate-id", "the packs have different Mandate IDs");
+    if (!sameMandateId(a.result.identity?.tenantId, b.result.identity?.tenantId)) return fail("mandate-id", "they have different Mandate IDs");
     if (a.result.publicKeyFingerprint !== b.result.publicKeyFingerprint && !(a.trusted === true && b.trusted === true)) {
-      return fail("key", "the packs are signed by different keys");
+      return fail("key", "they are signed by different keys");
     }
     const gap = Date.parse(b.result.identity?.windowFrom) - Date.parse(a.result.identity?.windowTo);
-    if (!(gap <= 1)) return fail("gap", "the windows leave a gap between them");
+    if (!(gap <= 1)) return fail("gap", "their periods leave a gap between them");
     if (a.result.inProgress && !(Date.parse(b.result.identity?.windowFrom) - packReach(a.result) <= 1)) {
       return fail("gap", `${a.name} was made at ${a.result.identity.generatedAt}, before its period ended at ${a.result.identity.windowTo}, and covers it to a minute before then, so the time after is in neither`);
     }
     const ja = a.result.chain?.joins;
     const jb = b.result.chain?.joins;
     if (!ja || !jb) {
-      return fail("unreadable", [a, b].some((p) => p.result.chain?.status === "invalid") ? "the records in one of the packs fail their own check" : "a pack carries no records file");
+      return fail("unreadable", [a, b].some((p) => p.result.chain?.status === "invalid") ? "the records in one of them fail their own check" : "one of them carries no records file");
     }
     const compared = comparePacks(a, b);
     if (compared.kind) return fail(compared.kind, compared.detail, { id: compared.id, subject: compared.subject, fields: compared.fields ?? [] });
     notes.push(...compared.notes);
     erased.push(...compared.erased);
     if (!ja.last || !jb.first) continue;
-    if (!ja.byId.has(jb.first.id) && jb.first.prev !== ja.last.hash) return fail("continuity", "the later pack does not continue from the earlier one");
+    if (!ja.byId.has(jb.first.id) && jb.first.prev !== ja.last.hash) return fail("continuity", "the later one does not continue from the earlier one");
   }
   if (notRead) return { status: "unsupported", kind: "format", reason: `${notRead} is in a format this checker does not read` };
   return { status: "valid", packs: ordered.length, notes, erased, ...sequenceProgress(ordered) };
@@ -2556,7 +2575,7 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
     return {
       manifest: {
         status: "unsupported",
-        reason: `this pack is format ${manifest.manifestVersion}; this verifier reads format ${SUPPORTED_MANIFEST_VERSION}. Use the verifier released with the pack, or the latest from mandateco.ca/verify.html`,
+        reason: `this record is format ${manifest.manifestVersion}; this checker reads format ${SUPPORTED_MANIFEST_VERSION}. Use the checker released with the record, or the latest from mandateco.ca/verify.html`,
       },
       files: [],
       checkpoints: [],
@@ -2574,7 +2593,7 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
     }
     const bytes = fileBytes.get(entry.filename);
     if (!bytes) {
-      files.push({ path: entry.filename, status: "missing", reason: "file not present in pack" });
+      files.push({ path: entry.filename, status: "missing", reason: "listed in the manifest but not in the record" });
       continue;
     }
     const actual = await sha256Hex(bytes);
@@ -2590,7 +2609,7 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
   const listed = new Set(manifest.contents.map((c) => c.filename));
   for (const name of fileBytes.keys()) {
     if (name === "manifest.json" || listed.has(name)) continue;
-    files.push({ path: name, status: "invalid", reason: "file present in pack but not listed in manifest.contents" });
+    files.push({ path: name, status: "invalid", reason: "in the record but not listed in the manifest" });
   }
 
   const MANIFEST_FIELDS = ["manifestVersion", "tenantId", "generatedAt", "windowFrom", "windowTo", "truncated", "checkpointsTruncated",
@@ -2614,7 +2633,7 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
     const signature = hexToBytes(manifest.signatureHex);
     const publicKey = base64ToBytes(manifest.publicKeyBase64);
     manifestFingerprint = await sha256Hex(publicKey);
-    manifestResult = await verifyEd25519(payload, signature, publicKey, "manifest signature does not match the pack contents");
+    manifestResult = await verifyEd25519(payload, signature, publicKey, "manifest signature does not match the record's contents");
     const checkpointFiles = [...fileBytes.keys()].filter((n) => n.startsWith("checkpoints/") && n.endsWith(".json"))
       .map((n) => n.slice("checkpoints/".length, -".json".length).toLowerCase()).sort();
     const namedCheckpoints = Array.isArray(manifest.checkpointIds) ? manifest.checkpointIds.map((c) => String(c).toLowerCase()).sort() : null;
@@ -2624,7 +2643,7 @@ export async function verifyEvidencePackBytes(zipBytes, inflateRaw, options = {}
       && String(manifest.publicKeyFingerprint).toLowerCase() !== manifestFingerprint) {
       manifestResult = { status: "invalid", reason: "manifest.publicKeyFingerprint names another key than the one that signed it" };
     } else if (manifestResult.status === "valid" && namedCheckpoints !== null && namedCheckpoints.join() !== checkpointFiles.join()) {
-      manifestResult = { status: "invalid", reason: "manifest.checkpointIds does not list exactly the checkpoint files the pack carries" };
+      manifestResult = { status: "invalid", reason: "the manifest's list of checkpoints does not match the checkpoint files the record carries" };
     }
   } catch (err) {
     manifestResult = { status: "invalid", reason: `manifest verification failed: ${err.message}` };
@@ -2821,7 +2840,7 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     return {
       manifest: {
         status: "unsupported",
-        reason: `this access record is format ${manifest.manifestVersion}; this verifier reads format ${SUPPORTED_DSR_MANIFEST_VERSION}. Use the verifier released with the record, or the latest from mandateco.ca/verify.html`,
+        reason: `this access record is format ${manifest.manifestVersion}; this checker reads format ${SUPPORTED_DSR_MANIFEST_VERSION}. Use the checker released with the record, or the latest from mandateco.ca/verify.html`,
       },
       files: [],
       overall: "unsupported",
@@ -2837,7 +2856,7 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     }
     const bytes = fileBytes.get(entry.filename);
     if (!bytes) {
-      files.push({ path: entry.filename, status: "missing", reason: "file not present in pack" });
+      files.push({ path: entry.filename, status: "missing", reason: "listed in the manifest but not in the record" });
       continue;
     }
     const actual = await sha256Hex(bytes);
@@ -2853,7 +2872,7 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
   const listed = new Set(manifest.contents.map((c) => c.filename));
   for (const name of fileBytes.keys()) {
     if (name === "manifest.json" || listed.has(name)) continue;
-    files.push({ path: name, status: "invalid", reason: "file present in pack but not listed in manifest.contents" });
+    files.push({ path: name, status: "invalid", reason: "in the record but not listed in the manifest" });
   }
 
   const MANIFEST_FIELDS = ["manifestVersion", "tenantId", "subjectHashHex", "generatedAt", "windowFrom", "windowTo", "truncated", "unscannableRows",
@@ -2880,7 +2899,7 @@ export async function verifyDsrAccessPackBytes(zipBytes, inflateRaw) {
     const signature = hexToBytes(manifest.signatureHex);
     const publicKey = base64ToBytes(manifest.publicKeyBase64);
     manifestFingerprint = await sha256Hex(publicKey);
-    manifestResult = await verifyEd25519(payload, signature, publicKey, "manifest signature does not match the pack contents");
+    manifestResult = await verifyEd25519(payload, signature, publicKey, "manifest signature does not match the record's contents");
     if (manifestResult.status === "valid" && unsignedFields.length > 0) {
       manifestResult = { status: "invalid", reason: `manifest.json carries ${unsignedFields.join(", ")}, which its signature does not cover` };
     } else if (manifestResult.status === "valid" && manifest.publicKeyFingerprint !== undefined
@@ -3028,32 +3047,36 @@ const VERIFIER_CORE_END = "VERIFIER-CORE-END";
 
 function usage() {
   return [
-    "Usage: node mandate-verify.mjs <record.zip | checkpoint.json | folder> [...] [--expect-fingerprint <hex>]... [--timestamp-root <file>]... [--require-timestamps] [--json] [--version]",
+    "Usage: node mandate-verify.mjs <record.zip | checkpoint.json | folder> [...] [--expect-fingerprint <hex>]... [--timestamp-root <file>]... [--require-timestamps] [--json] [--version] [--help]",
+    "",
+    "Checks a Mandate signed record, access record or checkpoint offline; the checker tells which from the file.",
     "",
     "--expect-fingerprint names the fingerprint from your agreement: 64 hex characters, plain or in pairs separated by colons or spaces.",
     "Give it more than once after a key change: every key in a record, its checkpoints included, must be one you named.",
     "",
     "Several records are checked one by one and then together: the parts of one complete export, or an earlier and a later export.",
-    "They must have one Mandate ID, be signed by one key or by keys you named, leave no gap between their periods, each continue from the one before,",
-    "and no record or change-trail entry one holds inside the time the other covers may be missing from the other or read differently there;",
-    "a decision's readable row, the person included, must read the same in both.",
+    "They must have one Mandate ID and be signed by one key, or by keys you named. Their periods must leave no gap, and each must continue from the one before.",
+    "Where two cover the same time, no record or change-trail entry one holds may be missing from the other or read differently there,",
+    "and a decision's readable row, the person included, must read the same in both.",
     "Each export covers its period up to a minute before it says it was made, or only the span its records hold when it says it is partial;",
     "what that leaves out is named, and so is any decision erased between the exports.",
     "An export made before its period ended is in progress: it holds what was recorded up to when it was made, and says so.",
     "A later export must then start no later than a minute before the one in progress was made, or the time between is in neither.",
-    "A folder stands for every record in it, in name order: unzip a complete export and give the verifier its folder. A folder is checked one neighbour at a time, so a long export needs no more memory than two parts.",
-    "A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the verifier the folder.",
+    "A folder stands for every record in it, in name order: unzip a complete export and give the checker its folder. A folder is checked two parts at a time, so a long export needs no more memory than two parts.",
+    "A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the checker the folder.",
     "Parts named as a complete export names them (part-0001-of-0012.zip) must all be there, even when one is given alone: a part missing is named and the check fails.",
     "",
-    "Checks a Mandate signed record or access record offline (the kind is read off the manifest). Exit codes:",
+    "Exit codes:",
     "  0 valid, signed by a key you named   1 invalid, signed by a key you did not name, or records that do not join",
-    "  2 usage/IO/ZIP error, or a complete export given as one file",
-    "  3 not checked: a format this verifier does not read (DIFFERENT FORMAT), or no Ed25519 in this runtime (UNSUPPORTED)",
+    "  2 a wrong option or value, a file the checker cannot read as a record or checkpoint, or a complete export given as one file",
+    "  3 not checked: a format this checker does not read (DIFFERENT FORMAT), or no Ed25519 in this runtime (UNSUPPORTED)",
     "    A record whose change trail is sealed in the layout used before checker 2.7.0 is a different format: checker 2.6.0 reads it.",
     "  4 not verified: signed by a key that was not checked (name the fingerprint from your agreement with --expect-fingerprint),",
     "    or outside timestamps that could not be verified (below)",
     "With several files the exit code is the most serious of theirs: 1 first, then 3, then 2, then 4, then 0.",
     "The last line, OVERALL, says the same in words.",
+    "In the output, [ ok ] is a check that passed, [FAIL] one that failed, [MISS] a listed file that is missing, [ -- ] something noted that",
+    "is not a failure, and [ ?? ] something that could not be checked.",
     "",
     "--json prints one JSON document. For one file it is that file's result, or the error when the file cannot be read; for a folder,",
     "several files or a part of a complete export, it lists every file with its own result and exit code, the sequence when there is one,",
@@ -3064,14 +3087,14 @@ function usage() {
     "Given beside records, or found in a folder with them, it is still checked on its own, after them and apart from their sequence.",
     "",
     "Outside timestamps: a checkpoint may carry a timestamp from an independent timestamp authority (RFC 3161), which shows it existed",
-    "by that time. Each is checked offline against the roots this verifier ships (DigiCert Trusted Root G4). A checkpoint without one is",
-    "named. In a record, a checkpoint without one before a checkpoint with one, or one stamped before an earlier checkpoint, is INVALID:",
-    "Mandate stamps checkpoints in the order of their records, so either means a checkpoint was replaced after the fact. One this verifier",
-    "cannot check before one it can is NOT VERIFIED (exit 4) until its authority's root is named.",
+    "by that time. Each is checked offline against the roots this checker ships (DigiCert Trusted Root G4). A checkpoint without one is",
+    "named. In a record, a checkpoint without one before a checkpoint with one, or one stamped more than five minutes before an earlier",
+    "checkpoint, is INVALID: Mandate stamps checkpoints in the order of their records, so neither happens unless a checkpoint was replaced",
+    "after the fact. One this checker cannot check before one it can is NOT VERIFIED (exit 4) until its authority's root is named.",
     "--timestamp-root names a root certificate (PEM or DER) to trust as well, such as your own authority's. Give it more than once for several.",
-    "--require-timestamps reports NOT VERIFIED (exit 4) unless every checkpoint carries a timestamp this verifier can check, stamped",
+    "--require-timestamps reports NOT VERIFIED (exit 4) unless every checkpoint carries a timestamp this checker can check, stamped",
     "within a day of its last record; in a record, only checkpoints of its last two hours may have none yet. A checkpoint checked on its",
-    "own has no record times, so only its token is checked.",
+    "own has no record times, so only its timestamp is checked.",
   ].join("\n");
 }
 
@@ -3171,7 +3194,7 @@ async function main(argv) {
       console.error(message);
       if (asJson) files.push({ pack: path, error: message, completeExport: found, exitCode: 2 });
       worst = worse(worst, 2);
-      outcomes.push({ path, code: 2, words: "is a complete export: unzip it and give the verifier the folder" });
+      outcomes.push({ path, code: 2, words: "is a complete export: unzip it and give the checker the folder" });
     }
   }
   let sequence = null;
@@ -3330,7 +3353,7 @@ function completeExportWords(path, found) {
     ? ` It does not hold ${found.firstMissing}${found.missing > 1 ? ` and ${found.missing - 1} more` : ""}, so the folder will not cover the whole period.`
     : "";
   return `${path} is a complete export: an archive of ${found.parts} record${found.parts === 1 ? "" : "s"}${range}.${missing} `
-    + "The archive itself is not signed, so it is not checked as a record. Unzip it into a folder, then give the verifier the folder:\n"
+    + "The archive itself is not signed, so it is not checked as a record. Unzip it into a folder, then give the checker the folder:\n"
     + "    node mandate-verify.mjs <folder> --expect-fingerprint <hex>";
 }
 
@@ -3361,7 +3384,7 @@ function timestampLines(ts) {
   }
   if (ts.absent.length > 0) lines.push(`[ -- ] ${ts.absent.length} checkpoint(s) have no outside timestamp: ${ts.absent.map((a) => a.checkpointId).join(", ")}`);
   if (ts.untrusted.length > 0) {
-    lines.push(`[ -- ] ${ts.untrusted.length} checkpoint(s) carry a timestamp this verifier cannot check (${ts.untrusted[0].reason}); name its authority's root with --timestamp-root: ${ts.untrusted.map((a) => a.checkpointId).join(", ")}`);
+    lines.push(`[ -- ] ${ts.untrusted.length} checkpoint(s) carry a timestamp this checker cannot check (${ts.untrusted[0].reason}); name its authority's root with --timestamp-root: ${ts.untrusted.map((a) => a.checkpointId).join(", ")}`);
   }
   for (const l of ts.late) lines.push(`[ -- ] checkpoint ${l.checkpointId} was stamped ${l.hours} hours after its last record, so its timestamp shows only that it existed by then`);
   if (ts.notPlaced > 0) lines.push(`[ -- ] ${ts.notPlaced} checkpoint(s) outside the records file: their timestamps are checked, their order is not`);
@@ -3408,11 +3431,13 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
   const fingerprintMismatches = [];
   if (expected.length > 0) {
     if (!named(result.publicKeyFingerprint)) {
-      fingerprintMismatches.push(`manifest key is ${result.publicKeyFingerprint ?? "(none)"}`);
+      fingerprintMismatches.push(result.publicKeyFingerprint ? `the record is signed by key ${result.publicKeyFingerprint}, which is not one you named`
+        : "the record carries no signing key");
     }
     for (const c of checkpoints) {
       if (!named(c.publicKeyFingerprint)) {
-        fingerprintMismatches.push(`checkpoint ${c.checkpointId} key is ${c.publicKeyFingerprint ?? "(none)"}`);
+        fingerprintMismatches.push(c.publicKeyFingerprint ? `checkpoint ${c.checkpointId} is signed by key ${c.publicKeyFingerprint}, which is not one you named`
+          : `checkpoint ${c.checkpointId} carries no signing key`);
       }
     }
   }
@@ -3423,7 +3448,7 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
     console.log(`Kind           : ${kind === "dsr" ? "access record" : "signed record"}`);
     if (result.identity) {
       console.log(`Mandate ID     : ${result.identity.tenantId}`);
-      console.log(`Generated      : ${localTime(result.identity.generatedAt)}`);
+      console.log(`Made           : ${localTime(result.identity.generatedAt)}`);
       console.log(`Period         : ${result.identity.windowFrom ? localTime(result.identity.windowFrom) : "(open)"} to ${result.identity.windowTo ? localTime(result.identity.windowTo) : "(open)"}`);
     }
     if (kind === "dsr" && result.subjectHashHex !== undefined) {
@@ -3436,7 +3461,7 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
       );
     } else if (result.truncated !== undefined) {
       const partial = partialParts(result);
-      const cut = partial.length > 0 ? `this export holds part of its period (partial: ${partial.join(", ")})` : "";
+      const cut = partial.length > 0 ? `this record holds part of its period (partial: ${partial.join(", ")})` : "";
       console.log(`Complete       : ${result.inProgress
         ? `no, in progress: ${progressWords(result)}${cut ? `; ${cut}` : ""}`
         : cut ? `no, ${cut}` : "yes, the whole period"}`);
@@ -3466,17 +3491,17 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
       for (const line of timestampLines(result.timestamps)) console.log(`  ${line}`);
     }
     for (const mm of fingerprintMismatches) {
-      console.log(`  [FAIL] fingerprint expectation: ${mm}`);
+      console.log(`  [FAIL] ${mm}`);
     }
     if (result.chain) {
       const ch = result.chain;
       console.log("");
       if (ch.status === "valid") {
-        const parts = [[ch.kinds?.decisions, "decision"], [ch.kinds?.answers, "answer relayed"], [ch.kinds?.imported, "imported record"], [ch.kinds?.changes, "change"], [ch.kinds?.tests, "test prompt"]]
+        const parts = [[ch.kinds?.decisions, "decision"], [ch.kinds?.answers, "answer relayed"], [ch.kinds?.imported, "imported record"], [ch.kinds?.changes, "change record"], [ch.kinds?.tests, "test prompt"]]
           .filter(([n]) => n > 0).map(([n, noun]) => `${n} ${noun}${n === 1 ? "" : noun === "answer relayed" ? "" : "s"}`.replace("answer relayed", n === 1 ? "answer relayed" : "answers relayed"));
         console.log(`Records: [ ok ] ${ch.records} records link in order${parts.length ? ` (${parts.join(", ")})` : ""}`);
         for (const e of ch.erasures ?? []) {
-          console.log(`         [ ok ] ${e.removed} record${e.removed === 1 ? "" : "s"} removed under ${e.reason === "privacy request" ? "a privacy request" : "the retention setting"} on ${localTime(e.at)} keep${e.removed === 1 ? "s its" : " their"} place (entry ${e.id})`);
+          console.log(`         [ ok ] ${e.removed} record${e.removed === 1 ? "" : "s"} erased under ${e.reason === "privacy request" ? "a privacy request" : "the retention setting"} on ${localTime(e.at)} keep${e.removed === 1 ? "s its" : " their"} place (entry ${e.id})`);
         }
         console.log(`         [ ok ] ${ch.checkpointsRecomputed} checkpoint root(s) recomputed from the records${ch.checkpointsNotCovered ? `, ${ch.checkpointsNotCovered} not covered: the records file is partial` : ""}`);
         console.log(`         [ ok ] ${ch.decisionsTied} decision(s) in the register match their records${ch.decisionsNotTied ? `, ${ch.decisionsNotTied} outside the records file` : ""}${ch.peopleTied ? `, ${ch.peopleTied} naming a person` : ""}`);
@@ -3485,10 +3510,13 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
         if (ch.reportTied) console.log("         [ ok ] the printed report was drawn from the checked summary");
         console.log(`         [ ok ] ${ch.policyVersions} policy version(s) match their text`);
         if (ch.listsChecked) console.log(`         [ ok ] ${ch.listsChecked} list(s) of names match their seals`);
-        else if (ch.listsSealed) console.log(`         [ -- ] ${ch.listsSealed} list(s) of names sealed; this export leaves the names out`);
+        else if (ch.listsSealed) console.log(`         [ -- ] ${ch.listsSealed} list(s) of names sealed; this record leaves the names out`);
         if (ch.summaryCompared) console.log("         [ ok ] the summary counts match the decisions");
         else if (ch.summaryNotCompared) console.log(`         [ -- ] the summary counts were not compared: ${ch.summaryNotCompared}`);
-        if (ch.importsCompared) console.log("         [ ok ] what the report says other AI tools reported matches imports/");
+        if (ch.importsCompared) {
+          console.log(ch.importsFeeds === 0 ? "         [ ok ] the report names no activity from other AI tools, and the record carries no imports/ files"
+            : "         [ ok ] what the report says other AI tools reported matches imports/");
+        }
         else if (ch.importsNotCompared) console.log(`         [ -- ] what the report says other AI tools reported was not compared: ${ch.importsNotCompared}`);
         const decided = finalDecisionsLine(ch.finalDecisions);
         if (decided) console.log(`         ${decided.tag} ${decided.label}`);
@@ -3509,7 +3537,7 @@ async function verifyOne(packPath, expectFingerprints, asJson, options = {}) {
     return { code: 3, result, kind, entry };
   }
   if (result.overall === "invalid" || fingerprintMismatches.length > 0) {
-    if (!asJson) console.log("RESULT: INVALID");
+    if (!asJson) console.log(result.overall === "invalid" ? "RESULT: INVALID" : "RESULT: INVALID (a signing key is not one you named)");
     return { code: 1, result, kind, entry };
   }
   if (result.timestamps?.notVerified) {
@@ -3552,7 +3580,7 @@ async function verifyCheckpointOne(path, expected, asJson, options = {}) {
   const result = await verifyCheckpointFileBytes(bytes, options);
   if (result.unreadable) return failed(`cannot read ${path} as a Mandate record or checkpoint: ${result.signature.reason}`);
   const fingerprintMismatches = expected.length > 0 && result.checkpoint && !expected.includes(result.publicKeyFingerprint ?? "")
-    ? [`checkpoint key is ${result.publicKeyFingerprint ?? "(none)"}`]
+    ? [result.publicKeyFingerprint ? `the checkpoint is signed by key ${result.publicKeyFingerprint}, which is not one you named` : "the checkpoint carries no signing key"]
     : [];
   const entry = { pack: path, expectedFingerprints: expected, fingerprintMismatches, ...result };
   if (!asJson) {
@@ -3575,7 +3603,7 @@ async function verifyCheckpointOne(path, expected, asJson, options = {}) {
     const sig = result.signature;
     console.log(`Checkpoint signature: ${sig.status === "valid" ? "ok" : `${sig.status.toUpperCase()} (${sig.reason})`}`);
     if (result.timestamp) console.log(`Outside timestamp   : ${result.timestamp.status === "valid" ? `ok, ${timestampWords(result.timestamp)}` : timestampWords(result.timestamp)}`);
-    for (const mm of fingerprintMismatches) console.log(`  [FAIL] fingerprint expectation: ${mm}`);
+    for (const mm of fingerprintMismatches) console.log(`  [FAIL] ${mm}`);
     console.log("");
     if (c) {
       console.log("The signature covers the Mandate ID, the first and last record's ids, how many records there are and their root.");
@@ -3592,7 +3620,7 @@ async function verifyCheckpointOne(path, expected, asJson, options = {}) {
     return { code: 3, result, kind: "checkpoint", entry };
   }
   if (result.overall === "invalid" || fingerprintMismatches.length > 0) {
-    if (!asJson) console.log("RESULT: INVALID (checkpoint)");
+    if (!asJson) console.log(result.overall === "invalid" ? "RESULT: INVALID (checkpoint)" : "RESULT: INVALID (checkpoint, its signing key is not one you named)");
     return { code: 1, result, kind: "checkpoint", entry };
   }
   if (result.timestampNotVerified) {

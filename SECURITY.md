@@ -8,22 +8,22 @@ Please do not open a public issue for a vulnerability before we've had a chance 
 
 ## In scope for this repository
 
-- A tampered record that exits `0`: any way to alter, add, or remove content in a signed record or access record, or in the records inside it, that this verifier still reports as VALID with the right `--expect-fingerprint`. This includes the sealed documents in `assessments/` (assessments, reviews of findings, artifact versions, measure values, impact assessment versions), the final decisions, a finding's review decision and an assessment's sign-off.
+- A tampered record that exits `0`: any way to alter, add, or remove content in a signed record or access record, or in the records inside it, that this checker still reports as VALID with the right `--expect-fingerprint`. This includes the sealed documents in `assessments/` (assessments, reviews of findings, artifact versions, measure values, impact assessment versions), the final decisions, a finding's review decision and an assessment's sign-off.
 - A tampered checkpoint file that exits `0` with the right `--expect-fingerprint`.
-- A record changed after it was signed, or signed by a key you did not name, that the verifier answers DIFFERENT FORMAT (exit `3`) as a record in the change-trail layout used before 2.7.0, instead of INVALID.
-- An outside timestamp the verifier reports as valid when it is not over its checkpoint, was not signed by a certificate for timestamping only, does not lead to a root the verifier ships or you named, or was signed outside a certificate's validity; or any input that makes the verifier report a time for a token it did not verify.
-- A signed record whose checkpoints were stamped out of the order of their records, or that lacks a timestamp before a checkpoint that has one, which the verifier still reports as VALID.
-- Two exports that disagree about a record, a change-trail entry or a decision's readable row inside the time both cover, which the verifier still reports as a VALID sequence.
-- Fingerprint misreporting: any input that makes the verifier print a key fingerprint other than the SHA-256 of the key that actually verified, or print VALID for a key that was not named.
-- Resource exhaustion within the documented caps: inputs at or under 50 MB and 1,032 entries, or a timestamp token at or under 64 KB, that hang the verifier or exhaust memory disproportionately.
-- The test suite passing on a verifier that violates any of the above.
+- A record changed after it was signed, or signed by a key you did not name, that the checker answers DIFFERENT FORMAT (exit `3`) as a record in the change-trail layout used before 2.7.0, instead of INVALID.
+- An outside timestamp the checker reports as valid when it is not over its checkpoint, was not signed by a certificate for timestamping only, does not lead to a root the checker ships or you named, or was signed outside a certificate's validity; or any input that makes the checker report a time for a token it did not verify.
+- A signed record whose checkpoints were stamped out of the order of their records, or that lacks a timestamp before a checkpoint that has one, which the checker still reports as VALID.
+- Two exports that disagree about a record, a change-trail entry or a decision's readable row inside the time both cover, which the checker still reports as a VALID sequence.
+- Fingerprint misreporting: any input that makes the checker print a key fingerprint other than the SHA-256 of the key that actually verified, or print VALID for a key that was not named.
+- Resource exhaustion within the documented caps: inputs at or under 50 MB and 1,032 entries, or a timestamp token at or under 64 KB, that hang the checker or exhaust memory disproportionately.
+- The test suite passing on a checker that violates any of the above.
 
 ## Out of scope
 
 - Inputs beyond the documented caps being rejected (that's the design).
 - A record exported before checker 2.7.0 (2026-10-25) answering DIFFERENT FORMAT, or INVALID when it holds no sealed change-trail entry. The README documents both; check such a record with the checker released with it.
 - Whether a timestamp authority, or a root you name with `--timestamp-root`, deserves trust.
-- Vulnerabilities in Node.js itself, or in a modified copy of the verifier.
+- Vulnerabilities in Node.js itself, or in a modified copy of the checker.
 - The sample records' fictional contents.
 
 ## Reproduction material

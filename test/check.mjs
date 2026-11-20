@@ -75,6 +75,9 @@
  *               there are more fails the sequence; a part not verified for a reason of its own says so on the
  *               SEQUENCE and OVERALL lines; --json prints a document when a file cannot be read; the usage text
  *               states the exit codes and the one-minute rule as the checks apply them.
+ *               2.21.1: no line a reader sees calls the tool the verifier; when one copy of a change-trail entry names
+ *               who acted and the other does not, the note says which export names who acted and which carries the
+ *               entry's sealed record, and gives no reason the checker could not check.
  *   4. FINAL DECISIONS (2.16.0) - each batch's record hashes to the record its change-trail entry seals, that entry
  *               ties to its change record like any other, and each decision's salted digest is one its batch lists,
  *               every listed digest carried once; a decision's document, salt or digest changed, one left out or
@@ -1749,13 +1752,13 @@ for (const [label, tweak, expect] of [
       named.code === 0 && /^Unchanged since it was signed, with the key you named: 2 decisions: 1 allowed and 1 refused\.$/m.test(named.out)
         && /This is the fingerprint you named\./.test(named.out) && !/Compare this fingerprint/.test(named.out), named.out.slice(-600));
     ok("script prints what the records are and what removed one",
-      /^Records: \[ ok \] 5 records link in order \(3 decisions, 2 changes\)$/m.test(named.out)
-        && /1 record removed under a privacy request on .* keeps its place \(entry e1e1e1e1-0000-4000-8000-000000000001\)/.test(named.out), named.out);
+      /^Records: \[ ok \] 5 records link in order \(3 decisions, 2 change records\)$/m.test(named.out)
+        && /1 record erased under a privacy request on .* keeps its place \(entry e1e1e1e1-0000-4000-8000-000000000001\)/.test(named.out), named.out);
     // 2.6.0: exit 3 means a format this script does not read or a runtime without Ed25519, and the usage says both; a key
     // that is not 32 bytes is a broken record (exit 1), not a runtime without Ed25519.
     const help = cli("--help").out;
     ok("2.6.0: script usage names both meanings of exit 3",
-      /^ {2}3 not checked: a format this verifier does not read \(DIFFERENT FORMAT\), or no Ed25519 in this runtime \(UNSUPPORTED\)$/m.test(help), help);
+      /^ {2}3 not checked: a format this checker does not read \(DIFFERENT FORMAT\), or no Ed25519 in this runtime \(UNSUPPORTED\)$/m.test(help), help);
     // 2.10.0: a run that exits 4 never calls a file unchanged, in its text or its --json, and the usage says exit 4 the same way.
     const uncheckedJson = cli(one, "--json");
     ok("2.10.0: script, no fingerprint -> nothing printed for a record, its --json or two parts that join says unchanged, nor the usage's exit 4",
@@ -1764,7 +1767,7 @@ for (const [label, tweak, expect] of [
       [unchecked.out, joinedUnchecked.out, help].join("\n").split("\n").filter((l) => /unchanged|^ {2}4 /i.test(l)).join(" | "));
     const otherFormat = cli(await save("f.zip", { manifestVersion: 2 }), "--expect-fingerprint", fp);
     ok("script, a format 2 record -> exit 3 and RESULT: DIFFERENT FORMAT",
-      otherFormat.code === 3 && /^RESULT: DIFFERENT FORMAT \(this pack is format 2/m.test(otherFormat.out), otherFormat.out.slice(-300));
+      otherFormat.code === 3 && /^RESULT: DIFFERENT FORMAT \(this record is format 2/m.test(otherFormat.out), otherFormat.out.slice(-300));
     const shortKeyRun = cli(await save("k.zip", { manifestKey: SHORT_KEY }));
     ok("2.6.0: script, a manifest key of 31 bytes -> exit 1 and RESULT: INVALID, not a runtime without Ed25519",
       shortKeyRun.code === 1 && /^RESULT: INVALID$/m.test(shortKeyRun.out) && /public key must be 32 bytes, got 31/.test(shortKeyRun.out)
@@ -1852,13 +1855,14 @@ for (const [label, tweak, expect] of [
       renamedRun.code === 2 && /cannot read .*evidence-pack-2026-01\.zip as a Mandate record/.test(renamedRun.out) && !/RESULT: VALID/.test(renamedRun.out), renamedRun.out);
     const cpOtherKey = cli(cpGood, "--expect-fingerprint", "cd".repeat(32));
     ok("2.10.0: script, a checkpoint file, another key named -> exit 1, the mismatch named",
-      cpOtherKey.code === 1 && /\[FAIL\] fingerprint expectation: checkpoint key is /.test(cpOtherKey.out) && /^RESULT: INVALID \(checkpoint\)$/m.test(cpOtherKey.out), cpOtherKey.out.slice(-300));
+      cpOtherKey.code === 1 && /\[FAIL\] the checkpoint is signed by key [0-9a-f]{64}, which is not one you named$/m.test(cpOtherKey.out)
+        && /^RESULT: INVALID \(checkpoint, its signing key is not one you named\)$/m.test(cpOtherKey.out), cpOtherKey.out.slice(-300));
     const cpEdited = cli(cpFile("mandate-checkpoint-edited.json", { ...bundle, eventCount: 7 }), "--expect-fingerprint", cpVector.publicKeyFingerprint);
     ok("2.10.0: script, a checkpoint file whose record count was changed -> exit 1 and the signature fails",
       cpEdited.code === 1 && /^Checkpoint signature: INVALID \(signature does not match checkpoint metadata and merkle root\)$/m.test(cpEdited.out), cpEdited.out.slice(-300));
     const cpLater = cli(cpFile("mandate-checkpoint-v3.json", { ...bundle, schemaVersion: 3 }), "--expect-fingerprint", cpVector.publicKeyFingerprint);
     ok("2.10.0: script, a checkpoint file of a later format (3 since 2.18.0) -> exit 3 and RESULT: DIFFERENT FORMAT",
-      cpLater.code === 3 && /^RESULT: DIFFERENT FORMAT \(this checkpoint is format 3; this verifier reads formats 1 and 2/m.test(cpLater.out), cpLater.out.slice(-300));
+      cpLater.code === 3 && /^RESULT: DIFFERENT FORMAT \(this checkpoint is format 3; this checker reads formats 1 and 2/m.test(cpLater.out), cpLater.out.slice(-300));
     const { merkleRootHex: _root, ...rootless } = bundle;
     const cpMissing = cli(cpFile("mandate-checkpoint-rootless.json", rootless));
     ok("2.10.0: script, a JSON file missing a checkpoint's field -> exit 1, said plainly",
@@ -1989,7 +1993,7 @@ for (const [label, tweak, expect] of [
     ok("2.15.0: script, a complete export named trial-record.zip -> exit 2, said plainly, never a result or INVALID",
       exportAlone.code === 2
         && exportAlone.out.includes(`${exportPath} is a complete export: an archive of 2 records, part-0001-of-0002.zip to part-0002-of-0002.zip. `
-          + "The archive itself is not signed, so it is not checked as a record. Unzip it into a folder, then give the verifier the folder:\n"
+          + "The archive itself is not signed, so it is not checked as a record. Unzip it into a folder, then give the checker the folder:\n"
           + "    node mandate-verify.mjs <folder> --expect-fingerprint <hex>")
         && !/RESULT:/.test(exportAlone.out) && !/INVALID/.test(exportAlone.out), exportAlone.out);
     const packsNamed = join(dir, "x-2-packs.zip");
@@ -2028,8 +2032,8 @@ for (const [label, tweak, expect] of [
       twoOfThreeRun.code === 1 && /^SEQUENCE: INVALID \(part-0003-of-0003\.zip is missing, so 2 of the 3 parts were given\)$/m.test(twoOfThreeRun.out),
       twoOfThreeRun.out.slice(-400));
     ok("2.15.0: script usage says a complete export is known by what it holds, and that exit 2 covers one given as a file",
-      /^A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the verifier the folder\.$/m.test(help)
-        && /2 usage\/IO\/ZIP error, or a complete export given as one file/.test(help), help);
+      /^A complete export downloaded as one archive is known by what it holds, whatever its name: unzip it and give the checker the folder\.$/m.test(help)
+        && /2 a wrong option or value, a file the checker cannot read as a record or checkpoint, or a complete export given as one file/.test(help), help);
 
     // 2.15.0: a check of several files ends with one line whose word is its exit code's, and the sequence line never
     // says VALID while a part failed its own check.
@@ -2169,8 +2173,11 @@ for (const [label, tweak, expect] of [
       generatedAt: "2026-01-16T12:30:00.0000000+00:00" });
     const earlierBeside = cli(earlier, following, gapAfter, "--expect-fingerprint", fp);
     ok("2.21.0: script, a part made before checker 2.7.0 beside two parts with a gap between them -> exit 1, the gap still found",
-      earlierBeside.code === 1 && /^SEQUENCE: INVALID \(.*the windows leave a gap between them\)$/m.test(earlierBeside.out), earlierBeside.out.slice(-500));
-    ok("script --version reports 2.21.0", /^mandate-verify 2\.21\.0 /.test(cli("--version").out));
+      earlierBeside.code === 1 && /^SEQUENCE: INVALID \(.*their periods leave a gap between them\)$/m.test(earlierBeside.out), earlierBeside.out.slice(-500));
+    ok("2.21.1: the usage and every line of a run call the tool the checker, never the verifier",
+      !/verifier/i.test(help) && [unchecked, named, otherFormat, exportAlone, earlierRun, cpLater].every((run) => !/verifier/i.test(run.out)),
+      [help, unchecked.out, named.out, otherFormat.out, exportAlone.out, earlierRun.out, cpLater.out].join("\n").split("\n").filter((l) => /verifier/i.test(l)).join(" | "));
+    ok("script --version reports 2.21.1", /^mandate-verify 2\.21\.1 /.test(cli("--version").out));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -2318,7 +2325,7 @@ for (const [label, tweak, expect] of [
   }
   const later = await check({ ...bundle, schemaVersion: 3 });
   ok("2.10.0: a checkpoint file of a later format (3 since 2.18.0) -> a different format, not invalid",
-    later.overall === "unsupported" && later.format === 3 && /^this checkpoint is format 3; this verifier reads formats 1 and 2/.test(later.signature.reason), JSON.stringify(later));
+    later.overall === "unsupported" && later.format === 3 && /^this checkpoint is format 3; this checker reads formats 1 and 2/.test(later.signature.reason), JSON.stringify(later));
   const junk = await check("{ this is not JSON");
   ok("2.10.0: a file that starts like JSON and is not -> unreadable, not a failed signature", junk.overall === "invalid" && junk.unreadable === true, JSON.stringify(junk));
   ok("2.10.0: a checkpoint file's times are not signed, so changing them leaves it valid (the script and page say so)",
@@ -2343,10 +2350,25 @@ for (const [label, tweak, expect] of [
   const later = "2026-01-15T13:00:00.0000000+00:00";
   const salted = await pack({ untied: "salted" });
   const gonePair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "gone" }) }]);
-  ok("2.6.0: an entry that no longer names who acted in the later export -> joins, and named",
-    gonePair.status === "valid" && gonePair.notes.includes(
-      "change-trail entry dddddddd-0000-4000-8000-000000000003 (policy.update) no longer names who acted in b: the account was removed between the exports"),
-    JSON.stringify(gonePair));
+  ok("2.21.1: an entry named in one export and not in the other, sealed in neither -> joins, and the note says what was not checked",
+    gonePair.status === "valid" && gonePair.notes.includes("change-trail entry dddddddd-0000-4000-8000-000000000003 (policy.update) names who acted in a "
+      + "but not in b; neither export carries the entry's sealed record, so neither copy was checked")
+      && !gonePair.notes.some((n) => /removed|account/.test(n)), JSON.stringify(gonePair));
+  // An entry the earlier export carries the sealed record of, and the later export carries without it, as an export
+  // whose records file holds only part of its period can: the later copy no longer naming who acted is let through
+  // with a note, and the note says the earlier export's sealed record names who acted.
+  const sealedFirst = await pack({});
+  const unsealedLater = await pack({ generatedAt: later });
+  const firstEntry = "dddddddd-0000-4000-8000-000000000001";
+  const laterJoins = { ...unsealedLater.chain.joins, changeLinks: new Map(), trail: new Map(unsealedLater.chain.joins.trail) };
+  const { actorId: _id, actorDisplay: _name, actorSalt: _salt, ...unnamedRow } = laterJoins.trail.get(firstEntry).row;
+  laterJoins.trail.set(firstEntry, { ...laterJoins.trail.get(firstEntry), row: { ...unnamedRow, actorType: "mandate_support" } });
+  const laterChain = Object.defineProperty({ ...unsealedLater.chain }, "joins", { value: laterJoins });
+  const sealedPair = checkPackSequence([{ name: "a", result: sealedFirst }, { name: "b", result: { ...unsealedLater, chain: laterChain } }]);
+  ok("2.21.1: an entry sealed in the earlier export and no longer named, unsealed, in the later one -> the note says the earlier sealed record names who acted",
+    sealedFirst.chain.joins.changeLinks.has(firstEntry) && sealedPair.status === "valid" && sealedPair.notes.includes(
+      `change-trail entry ${firstEntry} (held_decision.denied) names who acted in a but not in b; `
+      + "a carries the entry's sealed record and its copy matches it, while b does not carry it, so the copy there was not checked"), JSON.stringify(sealedPair));
   const queuedPair = checkPackSequence([{ name: "a", result: await pack({ untied: "named" }) }, { name: "b", result: await pack({ generatedAt: later, untied: "salted" }) }]);
   ok("2.6.0: an entry exported while queued, then with the salt of its seal -> joins", queuedPair.status === "valid", JSON.stringify(queuedPair));
   const otherPair = checkPackSequence([{ name: "a", result: salted }, { name: "b", result: await pack({ generatedAt: later, untied: "other" }) }]);
@@ -2371,7 +2393,7 @@ for (const [label, tweak, expect] of [
   const otherWorkspace = checkPackSequence([{ name: "a", result: baseline },
     { name: "b", result: { ...elsewhere, identity: { ...elsewhere.identity, tenantId: SYN_OTHER_WORKSPACE } } }]);
   ok("2.6.0: two exports of different Mandate IDs -> still refused, said by Mandate ID",
-    otherWorkspace.status === "invalid" && otherWorkspace.kind === "mandate-id" && /the packs have different Mandate IDs/.test(otherWorkspace.reason), JSON.stringify(otherWorkspace));
+    otherWorkspace.status === "invalid" && otherWorkspace.kind === "mandate-id" && /they have different Mandate IDs/.test(otherWorkspace.reason), JSON.stringify(otherWorkspace));
 }
 
 {
@@ -2467,7 +2489,7 @@ await throws("non-zip input -> reader rejects", async () => {
   ok("2.5.0: a manifest member the signature does not cover -> refused, the member named",
     extra.overall === "invalid" && /carries note, which its signature does not cover/.test(extra.manifest.reason ?? ""), extra.manifest.reason);
   const emptied = await verifyEvidencePackBytes(writeZip(edit((m) => ({ ...m, checkpointIds: [] }))), inflateRaw);
-  ok("2.5.0: checkpointIds emptied -> refused", emptied.overall === "invalid" && /checkpointIds does not list/.test(emptied.manifest.reason ?? ""), emptied.manifest.reason);
+  ok("2.5.0: checkpointIds emptied -> refused", emptied.overall === "invalid" && /the manifest's list of checkpoints does not match the checkpoint files/.test(emptied.manifest.reason ?? ""), emptied.manifest.reason);
 }
 {
   // Malformed manifest: a content entry with no sha256Hex must return overall "invalid", not throw a
@@ -2583,7 +2605,7 @@ console.log("\nFINAL DECISIONS (2.16.0, synthetic pack, test-vector key)");
     const printed = cli(await save("partly.zip", { erase: true, unsealed: true, truncated: true }), "--expect-fingerprint", fp);
     ok("2.16.0: script, one line for the file, and the export called partial when the file is cut short",
       printed.code === 0 && /^ {9}\[ ok \] 1 final decision in 1 batch matches its sealed record, 1 erased, 1 batch not checked \(its sealed record is outside this export\); this export holds the earliest batches of its period only$/m.test(printed.out)
-        && /^Complete\s+: no, this export holds part of its period \(partial: final decisions\)$/m.test(printed.out), printed.out);
+        && /^Complete\s+: no, this record holds part of its period \(partial: final decisions\)$/m.test(printed.out), printed.out);
     const cutPath = join(dir, "cut-findings.zip");
     writeFileSync(cutPath, writeZip((await buildSyntheticPack({ documents: { after: (f) => {
       f.findings.assessments = [];
@@ -2591,7 +2613,7 @@ console.log("\nFINAL DECISIONS (2.16.0, synthetic pack, test-vector key)");
     } } })).entries));
     const cutFindings = cli(cutPath, "--expect-fingerprint", fp);
     ok("2.17.0: script, an export whose findings file was cut at its size limit is called partial, the assessments named",
-      cutFindings.code === 0 && /^Complete\s+: no, this export holds part of its period \(partial: assessments\)$/m.test(cutFindings.out),
+      cutFindings.code === 0 && /^Complete\s+: no, this record holds part of its period \(partial: assessments\)$/m.test(cutFindings.out),
       cutFindings.out);
     const asJson = cli(await save("good.zip", {}), "--json", "--expect-fingerprint", fp);
     const doc = (() => { try { return JSON.parse(asJson.std); } catch { return null; } })();
@@ -2688,7 +2710,7 @@ const syntheticDsr = await buildSyntheticDsrPack();
   ok("2.6.0: an access record that names its key's fingerprint in capitals -> valid", upperKey.overall === "valid", JSON.stringify(upperKey.manifest));
   const format4 = await dsr({ manifestVersion: 4 });
   ok("2.6.0: an access record of format 4, signed as such -> a different format, not valid",
-    format4.overall === "unsupported" && format4.format === 4 && /this access record is format 4; this verifier reads format 3/.test(format4.manifest.reason ?? ""),
+    format4.overall === "unsupported" && format4.format === 4 && /this access record is format 4; this checker reads format 3/.test(format4.manifest.reason ?? ""),
     JSON.stringify(format4.manifest));
 }
 {
@@ -2886,8 +2908,9 @@ console.log("\nTIMESTAMP checks (outside timestamps on checkpoints, 2.18.0)");
   const mixed = await pack((c, i) => (i === 0
     ? tokenD(checker.checkpointTimestampImprint(c), at("2026-01-15T12:05:00Z"), { chain: [] })
     : tokenD(checker.checkpointTimestampImprint(c), at("2026-01-15T12:05:02Z"))));
-  ok("an earlier token this checker cannot check, before a later one it can -> not INVALID but not verified, naming --timestamp-root: an operator may have changed authorities",
-    mixed.overall === "valid" && mixed.timestamps.problem === null && /cannot check, before checkpoint 11111111-2222-4333-8444-666666666666.*--timestamp-root/.test(mixed.timestamps.notVerified ?? ""),
+  ok("an earlier token this checker cannot check, before a later one it can -> not INVALID but not verified: an operator may have changed authorities",
+    mixed.overall === "valid" && mixed.timestamps.problem === null
+      && /cannot check, before checkpoint 11111111-2222-4333-8444-666666666666, which has one it can$/.test(mixed.timestamps.notVerified ?? ""),
     JSON.stringify(mixed.timestamps));
   const tail = await pack(stampAt(["2026-01-15T12:05:00Z", null]));
   ok("the newest checkpoint not stamped yet -> valid, and named as having none yet",
